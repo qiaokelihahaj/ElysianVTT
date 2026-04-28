@@ -62,11 +62,11 @@ export class SocketServer {
              * [客户端意图] - 指令分发
              * 处理来自玩家的所有战术动作 (移动、攻击、施法)
              */
-            socket.on('CLIENT_INTENT', (data: { sceneId: string, intent: ClientIntent }) => {
+            socket.on('CLIENT_INTENT', async (data: { sceneId: string, intent: ClientIntent }) => {
                 const { sceneId, intent } = data;
                 
                 // 路由意图：根据场景 ID 寻找对应的 Engine 实例
-                const engine = this.campaignManager.getEngine(sceneId);
+                const engine = await this.campaignManager.getEngine(sceneId);
                 
                 if (engine) {
                     // 验证 actorId (未来：确保该 socket 拥有操作此实体的权限)

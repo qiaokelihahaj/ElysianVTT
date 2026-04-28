@@ -6,7 +6,7 @@ import { Entity } from '@hard-vtt/shared';
 
 export class CampaignManager {
     // 内存中保存所有正在运行的场景/战斗引擎 (Key: sceneId)
-    private engines = new Map<string, CombatEngine>();
+    private engines = new Map<string, Promise<CombatEngine>>();
     private io: Server;
 
     constructor(io: Server) {
@@ -17,9 +17,17 @@ export class CampaignManager {
      * 获取或创建一个场景的战斗引擎
      */
     public async getOrCreateEngine(sceneId: string): Promise<CombatEngine> {
-        if (this.engines.has(sceneId)) return this.engines.get(sceneId)!;
+        if (this.engines.has(sceneId)) {
+            return this.engines.get(sceneId)!;
+        }
 
-        console.log(`[CampaignManager] 初始化新场景引擎: ${sceneId}`);
+        const enginePromise = this.createEngine(sceneId);
+        this.engines.set(sceneId, enginePromise);
+
+        return enginePromise;
+    }
+
+    private async createEngine(sceneId: string): Promise<CombatEngine> {
         const newEngine = new CombatEngine(sceneId);
 
         // --- 从数据库拉取参战实体 ---
@@ -46,19 +54,15 @@ export class CampaignManager {
             console.log(`[CampaignManager] 场景 ${sceneId} 目前为空`);
         }
 
-        newEngine.mountEntities(entitiesToMount);
-        console.log(`[CampaignManager] 成功为场景注水 ${entitiesToMount.length} 个实体`);
-        // -----------------------------
-
         newEngine.on('STATE_MUTATED', (payload) => {
             this.io.to(sceneId).emit('STATE_MUTATED', payload);
         });
 
-        this.engines.set(sceneId, newEngine);
         return newEngine;
     }
 
-    public getEngine(sceneId: string): CombatEngine | undefined {
-        return this.engines.get(sceneId);
+    public async getEngine(sceneId: string): Promise<CombatEngine | undefined> {
+        const engine = this.engines.get(sceneId);
+        return engine ? await engine : undefined;
     }
 }
