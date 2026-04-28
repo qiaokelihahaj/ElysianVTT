@@ -1,0 +1,25 @@
+version: '3.8'
+services:
+  backend:
+    build: 
+      context: .
+      dockerfile: packages/backend/Dockerfile.dev
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    command: sh -c "pnpm install && pnpm --filter @hard-vtt/backend dev"
+
+  frontend:
+    build: 
+      context: .
+      dockerfile: packages/frontend/Dockerfile.dev
+    ports:
+      - "5173:5173"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    command: sh -c "pnpm install && pnpm --filter @hard-vtt/frontend dev"
+    depends_on:
+      - backend
