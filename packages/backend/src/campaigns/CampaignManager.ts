@@ -3,6 +3,7 @@ import { Server } from 'socket.io';
 import { CombatEngine } from './engines/CombatEngine.js';
 import { prisma } from '../db/prisma.js';
 import { Entity } from '@hard-vtt/shared';
+import { safeParse } from '../utils/SafeJsonParser.js';
 
 export class CampaignManager {
     // 内存中保存所有正在运行的场景/战斗引擎 (Key: sceneId)
@@ -35,14 +36,18 @@ export class CampaignManager {
             where: { currentSceneId: sceneId } // 👈 谁在这个房间就拉谁！
         });
 
+        const DEFAULT_RESOURCES = { current: {}, max: {} };
+        const DEFAULT_TRANSFORM = { coords: { x: 0, y: 0, z: 0 }, planeId: sceneId, facing: 0 };
+        const DEFAULT_PHYSICS   = { scaleClass: 1, collisionRadius: 0.5, mass: 50, movementModes: ['WALK'] };
+
         const entitiesToMount: Entity[] = sheets.map(sheet => {
             return {
                 id: sheet.id,
                 templateId: sheet.id,
                 type: sheet.type as 'ACTOR' | 'PROP' | 'PROJECTILE',
-                resources: JSON.parse(sheet.resourcesJson),
-                transform: JSON.parse(sheet.transformJson), // 👈 直接解析数据库里的坐标
-                physics: JSON.parse(sheet.physicsJson),     // 👈 直接解析数据库里的物理
+                resources: safeParse(sheet.resourcesJson, DEFAULT_RESOURCES, `resourcesJson of ${sheet.id}`),
+                transform: safeParse(sheet.transformJson, DEFAULT_TRANSFORM, `transformJson of ${sheet.id}`),
+                physics:   safeParse(sheet.physicsJson, DEFAULT_PHYSICS, `physicsJson of ${sheet.id}`),
                 activeEffects: []
             };
         });

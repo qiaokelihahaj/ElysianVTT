@@ -1,6 +1,7 @@
 // packages/backend/src/db/Dictionary.ts
 import { ActionTemplate } from '@hard-vtt/shared';
 import { prisma } from './prisma.js';
+import { safeParse, safeParseArray, safeParseRecord } from '../utils/SafeJsonParser.js';
 
 /**
  * 模拟内存数据库/JSON加载器
@@ -21,12 +22,12 @@ export class Dictionary {
                     startupTicks: t.startupTicks,
                     recoveryTicks: t.recoveryTicks
                 },
-                effects: JSON.parse(t.effectsJson),
+                effects: safeParseArray(t.effectsJson, [], `effectsJson of ${t.id}`),
 
-                // 因为我们在 schema 里将它们设为可选字段(String?)，所以加上回退保护
-                tags: t.tagsJson ? JSON.parse(t.tagsJson) : [],
-                resourceCost: t.resourceCostJson ? JSON.parse(t.resourceCostJson) : {},
-                range: t.rangeJson ? JSON.parse(t.rangeJson) : { type: 'MELEE', distanceExpr: '1' }
+                // 使用安全解析，在数据缺失或损坏时提供默认值
+                tags:         safeParseArray(t.tagsJson ?? '', [], `tagsJson of ${t.id}`),
+                resourceCost: safeParseRecord(t.resourceCostJson ?? '', {}, `resourceCostJson of ${t.id}`),
+                range:        safeParse(t.rangeJson ?? '', { type: 'MELEE', distanceExpr: '1' }, `rangeJson of ${t.id}`)
             });
         }
         console.log(`📚 成功从数据库加载 ${this.actions.size} 个技能模板.`);
