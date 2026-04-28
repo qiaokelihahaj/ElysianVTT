@@ -94,6 +94,11 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
 
             // 如果需要等待网络对齐，可以在此处 return
             // if (nextEvent.targetTick > this.networkSyncTick) break;
+            
+            // 如果下一个事件发生在未来，先把当前的差分广播出去，再跃迁时间！
+            if (nextEvent.targetTick > this.currentTick && this.pendingMutations.mutations.length > 0) {
+                this.broadcastMutations();
+            }
 
             const event = this.eventQueue.pop()!;
 

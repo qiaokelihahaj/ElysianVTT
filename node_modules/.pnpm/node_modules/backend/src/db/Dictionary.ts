@@ -1,5 +1,6 @@
 // packages/backend/src/db/Dictionary.ts
 import { ActionTemplate } from '@hard-vtt/shared';
+import { prisma } from './prisma.js';
 
 /**
  * 模拟内存数据库/JSON加载器
@@ -10,56 +11,25 @@ export class Dictionary {
 
     // packages/backend/src/db/Dictionary.ts
 
-    public static initMockData() {
-        // 注册一个“重击”技能
-        this.actions.set('HEAVY_STRIKE', {
-            id: 'HEAVY_STRIKE',
-            tags: ['physical', 'attack'],
-            timeCost: { startupTicks: 10, recoveryTicks: 5 },
-            // 1. resourceCost 必须是对象，值必须是字符串
-            resourceCost: {},
-            // 2. range 必须是对象结构
-            range: {
-                type: 'MELEE',
-                distanceExpr: '1'
-            },
-            effects: [
-                {
-                    type: 'DAMAGE',
-                    targetSelector: 'PRIMARY',
-                    parameters: {
-                        resource: 'hp',
-                        amountExpr: 'actor.str + 2d6'
-                    }
-                }
-                // ... 其他 effect
-            ]
-        });
+    public static async loadAllFromDb() {
+        const templates = await prisma.actionTemplate.findMany();
 
-        // 注册一个“治疗术”技能
-        this.actions.set('HEAL_SPELL', {
-            id: 'HEAL_SPELL',
-            tags: ['magic', 'heal'],
-            timeCost: { startupTicks: 15, recoveryTicks: 10 },
-            // 如果有消耗，值也要写成字符串（如 '10'）
-            resourceCost: {
-                mp: '10'
-            },
-            range: {
-                type: 'RANGED',
-                distanceExpr: '5'
-            },
-            effects: [
-                {
-                    type: 'HEAL',
-                    targetSelector: 'PRIMARY',
-                    parameters: {
-                        resource: 'hp',
-                        amountExpr: '20 + 1d8'
-                    }
-                }
-            ]
-        });
+        for (const t of templates) {
+            this.actions.set(t.id, {
+                id: t.id,
+                timeCost: {
+                    startupTicks: t.startupTicks,
+                    recoveryTicks: t.recoveryTicks
+                },
+                effects: JSON.parse(t.effectsJson),
+
+                // 因为我们在 schema 里将它们设为可选字段(String?)，所以加上回退保护
+                tags: t.tagsJson ? JSON.parse(t.tagsJson) : [],
+                resourceCost: t.resourceCostJson ? JSON.parse(t.resourceCostJson) : {},
+                range: t.rangeJson ? JSON.parse(t.rangeJson) : { type: 'MELEE', distanceExpr: '1' }
+            });
+        }
+        console.log(`📚 成功从数据库加载 ${this.actions.size} 个技能模板.`);
     }
 
     public static getAction(id: string): ActionTemplate | undefined {
