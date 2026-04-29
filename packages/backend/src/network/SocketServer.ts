@@ -41,13 +41,14 @@ export class SocketServer {
                 const { sceneId, actorId } = data;
 
                 try {
-                    // 1. 在 Socket.io 层面加入物理房间 (用于后续的 Diff 广播)
-                    socket.join(sceneId);
                     logger.info(`Player ${actorId} requested to join scene: ${sceneId}`, null, { sceneId });
 
-                    // 2. 异步注水：获取或创建该场景的引擎实例
+                    // 1. 异步注水：获取或创建该场景的引擎实例
                     // 该方法会从数据库拉取 CharacterSheet 并注水到 Engine 内存中
                     await this.campaignManager.getOrCreateEngine(sceneId);
+                    
+                    // 2. 在 Socket.io 层面加入物理房间 (用于后续的 Diff 广播)
+                    socket.join(sceneId);
                     
                     // 3. 回馈客户端
                     socket.emit('JOIN_SUCCESS', { 

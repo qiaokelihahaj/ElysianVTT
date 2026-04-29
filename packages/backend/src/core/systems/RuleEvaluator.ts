@@ -26,6 +26,7 @@ export interface EvaluationResult {
 }
 
 const DICE_REGEX = /(\d+)d(\d+)/g;
+DICE_REGEX.lastIndex = 0;
 
 export class RuleEvaluator {
     public static evaluate(expression: string, context: EvaluationContext): EvaluationResult {

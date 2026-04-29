@@ -29,7 +29,7 @@ async function bootstrap() {
         });
 
     } catch (error) {
-        logger.error('❌ [Bootstrap] 致命启动错误:', error);
+        logger.error('❌ [Bootstrap] 致命启动错误:', error instanceof Error ? error.message : error);
         process.exit(1);
     }
 }

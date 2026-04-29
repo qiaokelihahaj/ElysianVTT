@@ -53,7 +53,10 @@ export class EffectSystem {
         const resKey = effect.parameters.resource;
         const expr = effect.parameters.amountExpr;
 
-        if (!resKey || !expr) return;
+        if (!resKey || !expr) {
+            logger.warn(`跳过效果 [${effect.type}]: 缺少 resource 或 amountExpr`, { effect }, engineCtx);
+            return;
+        }
 
         // 计算公式值
         const { total: amount } = RuleEvaluator.evaluate(expr, { actor, target, diceRules: template.diceRules });

@@ -63,7 +63,7 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         // 从字典查询技能模板
         const template = Dictionary.getAction(intent.payload.actionTemplateId);
         if (!template) {
-            console.warn(`[CombatEngine] 技能 ${intent.payload.actionTemplateId} 不存在`);
+            this.logger.warn(`技能 ${intent.payload.actionTemplateId} 不存在`);
             return;
         }
 

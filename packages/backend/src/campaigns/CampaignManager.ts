@@ -22,13 +22,22 @@ export class CampaignManager {
      */
     public async getOrCreateEngine(sceneId: string): Promise<CombatEngine> {
         if (this.engines.has(sceneId)) {
-            return this.engines.get(sceneId)!;
+            try {
+                return await this.engines.get(sceneId)!;
+            } catch {
+                this.engines.delete(sceneId);
+            }
         }
 
         const enginePromise = this.createEngine(sceneId);
         this.engines.set(sceneId, enginePromise);
 
-        return enginePromise;
+        try {
+            return await enginePromise;
+        } catch (error) {
+            this.engines.delete(sceneId);
+            throw error;
+        }
     }
 
     private async createEngine(sceneId: string): Promise<CombatEngine> {
