@@ -12,6 +12,7 @@ export interface UiState {
 interface GameState {
     tick: number;
     entities: Record<string, Entity>;
+    selectedEntityId: string | null;
     uiState: UiState;
     
     // Actions
@@ -19,6 +20,7 @@ interface GameState {
     applyStateMutation: (payload: StateMutationPayload) => void;
     addEntity: (entity: Entity) => void;
     removeEntity: (entityId: string) => void;
+    setSelectedEntityId: (entityId: string | null) => void;
     
     // UI Actions
     setUiMode: (mode: UiState['mode']) => void;
@@ -31,6 +33,7 @@ export const useGameStore = create<GameState>()(
     immer((set) => ({
         tick: 0,
         entities: {},
+        selectedEntityId: null,
         uiState: {
             mode: 'IDLE',
             pendingMoveCoords: null,
@@ -40,6 +43,7 @@ export const useGameStore = create<GameState>()(
         setInitialScene: (entities, tick) => set((state) => {
             state.tick = tick;
             state.entities = {};
+            state.selectedEntityId = null;
             entities.forEach((entity) => {
                 state.entities[entity.id] = entity;
             });
@@ -67,6 +71,13 @@ export const useGameStore = create<GameState>()(
 
         removeEntity: (entityId) => set((state) => {
             delete state.entities[entityId];
+            if (state.selectedEntityId === entityId) {
+                state.selectedEntityId = null;
+            }
+        }),
+
+        setSelectedEntityId: (entityId) => set((state) => {
+            state.selectedEntityId = entityId;
         }),
 
         setUiMode: (mode) => set((state) => { 

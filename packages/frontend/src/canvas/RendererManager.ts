@@ -1,7 +1,6 @@
-import { Application, Container, Sprite, Graphics, Text, TextStyle } from 'pixi.js';
+import { Application, Container, Graphics, Text, TextStyle } from 'pixi.js';
 import { useGameStore } from '../store/gameStore';
 import type { VisualEventPayload } from '@hard-vtt/shared';
-import { IntentDispatcher } from '../network/IntentDispatcher';
 
 interface FloatingTextAnim {
     sprite: Text;
@@ -21,7 +20,7 @@ export class RendererManager {
     public previewLayer = new Container(); // For phantoms and indicators
 
     // References to sprites
-    private entitySprites: Map<string, Graphics | Sprite> = new Map();
+    private entitySprites: Map<string, Graphics> = new Map();
     private activeFloatingTexts: FloatingTextAnim[] = [];
     private phantomHero: Graphics | null = null;
 
@@ -65,6 +64,8 @@ export class RendererManager {
                 const targetPos = this.mapLayer.toLocal(e.global);
                 // Sets pending coordinate when clicking in map rather than dispatching right away
                 state.setPendingMoveCoords({ x: targetPos.x, y: targetPos.y, z: 0 });
+            } else {
+                state.setSelectedEntityId(null);
             }
         });
 
@@ -140,6 +141,10 @@ export class RendererManager {
                     this.entitySprites.set(id, sprite);
                     this.entityLayer.addChild(sprite);
                 }
+
+                if (sprite instanceof Graphics) {
+                    this.redrawEntitySprite(sprite, entity.type, state.selectedEntityId === id);
+                }
             }
 
             // Sync UiState for Ghost Phantom
@@ -156,40 +161,36 @@ export class RendererManager {
         });
     }
 
+    private redrawEntitySprite(graphics: Graphics, type: string, isSelected: boolean) {
+        graphics.clear();
+
+        if (type === 'ACTOR') {
+            graphics.circle(0, 0, 20);
+            graphics.fill(isSelected ? 0xf4c542 : 0x3498db);
+            graphics.moveTo(0, 0);
+            graphics.lineTo(20, 0);
+            graphics.stroke({ width: isSelected ? 4 : 2, color: isSelected ? 0xf4c542 : 0xffffff });
+        } else if (type === 'PROP') {
+            graphics.rect(-15, -15, 30, 30);
+            graphics.fill(isSelected ? 0xf4c542 : 0x95a5a6);
+            graphics.stroke({ width: isSelected ? 4 : 2, color: isSelected ? 0xf4c542 : 0xffffff });
+        } else {
+            graphics.circle(0, 0, 5);
+            graphics.fill(isSelected ? 0xf4c542 : 0xe74c3c);
+        }
+    }
+
     private createPlaceholderEntity(type: string, id: string): Graphics {
         const g = new Graphics();
-        if (type === 'ACTOR') {
-            g.circle(0, 0, 20);
-            g.fill(0x3498db); // Blue actor
-            // facing indicator
-            g.moveTo(0, 0);
-            g.lineTo(20, 0);
-            g.stroke({ width: 2, color: 0xffffff });
-        } else if (type === 'PROP') {
-            g.rect(-15, -15, 30, 30);
-            g.fill(0x95a5a6); // Gray prop
-        } else {
-            g.circle(0, 0, 5);
-            g.fill(0xe74c3c); // Red projectile
-        }
+        this.redrawEntitySprite(g, type, false);
 
         // Enable interaction with entities
         g.eventMode = 'static';
         g.cursor = 'pointer';
         g.on('pointerdown', (e) => {
             e.stopPropagation(); // 阻止事件冒泡到地图导致错误寻路
-            
-            const state = useGameStore.getState();
-            const hero = Object.values(state.entities).find(ent => ent.type === 'ACTOR');
-            
-            if (hero && hero.id !== id) {
-                // 如果这是敌人或物品，派发交互或攻击意图
-                if (type === 'ACTOR') {
-                    IntentDispatcher.dispatchCastAction(hero.id, 'basic_attack', [id]);
-                } else {
-                    IntentDispatcher.dispatchInteract(hero.id, id);
-                }
-            }
+
+            useGameStore.getState().setSelectedEntityId(id);
         });
 
         return g;
