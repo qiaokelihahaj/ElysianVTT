@@ -1,6 +1,9 @@
 // packages/backend/src/core/systems/EffectSystem.ts
-import { Entity, ActionTemplate, ActionEffectPayload, DiceRule } from '@hard-vtt/shared';
+import { Entity, ActionTemplate, ActionEffectPayload, DiceRule, LogVisibility } from '@hard-vtt/shared';
 import { RuleEvaluator } from './RuleEvaluator.js'; // 记得 .js 后缀
+import { Logger } from '../../utils/Logger.js';
+
+const logger = Logger.create('System:Effect');
 
 export class EffectSystem {
     /**
@@ -9,7 +12,8 @@ export class EffectSystem {
     public static applyAction(
         template: ActionTemplate, 
         actor: Entity, 
-        targets: Entity[]
+        targets: Entity[],
+        engineCtx?: { tick?: number; sceneId?: string }
     ): Map<string, Record<string, any>> {
         // 记录状态变更，Map<EntityId, Changes>
         const mutations = new Map<string, Record<string, any>>();
@@ -31,7 +35,7 @@ export class EffectSystem {
             }
 
             for (const target of resolvedTargets) {
-                this.executeEffect(effect, actor, target, template.diceRules, recordChange);
+                this.executeEffect(effect, actor, target, template, engineCtx, recordChange);
             }
         }
 
@@ -42,7 +46,8 @@ export class EffectSystem {
         effect: ActionEffectPayload, 
         actor: Entity, 
         target: Entity,
-        diceRules: DiceRule[] | undefined,
+        template: ActionTemplate,
+        engineCtx: { tick?: number; sceneId?: string } | undefined,
         recordChange: (id: string, path: string, value: any) => void
     ) {
         const resKey = effect.parameters.resource;
@@ -51,7 +56,7 @@ export class EffectSystem {
         if (!resKey || !expr) return;
 
         // 计算公式值
-        const { total: amount } = RuleEvaluator.evaluate(expr, { actor, target, diceRules });
+        const { total: amount } = RuleEvaluator.evaluate(expr, { actor, target, diceRules: template.diceRules });
 
         switch (effect.type) {
             case 'DAMAGE': {
@@ -63,7 +68,13 @@ export class EffectSystem {
                 
                 // 记录状态变化 (用于推给前端)
                 recordChange(target.id, `resources.current.${resKey}`, newVal);
-                console.log(`💥 [Effect: DAMAGE] ${target.id} 失去 ${amount} 点 ${resKey}, 剩余: ${newVal}`);
+                
+                logger.game(
+                    `[${actor.id}] 施放了 [${template.id}] 造成 ${amount} 点伤害`,
+                    { actionId: template.id, targetId: target.id, damage: amount },
+                    LogVisibility.PLAYER,
+                    engineCtx
+                );
                 break;
             }
             case 'HEAL': {
@@ -74,16 +85,26 @@ export class EffectSystem {
                 target.resources.current[resKey] = newVal;
                 
                 recordChange(target.id, `resources.current.${resKey}`, newVal);
-                console.log(`💚 [Effect: HEAL] ${target.id} 恢复 ${amount} 点 ${resKey}, 当前: ${newVal}`);
+                logger.game(
+                    `[${actor.id}] 施放了 [${template.id}] 恢复 ${amount} 点 ${resKey}`,
+                    { actionId: template.id, targetId: target.id, heal: amount },
+                    LogVisibility.PLAYER,
+                    engineCtx
+                );
                 break;
             }
             case 'APPLY_BUFF': {
                 // MVP: 仅记录日志，暂不实现完整的 Buff 挂载逻辑
-                console.log(`✨ [Effect: BUFF] ${target.id} 获得了 Buff: ${effect.parameters.buffId}`);
+                logger.game(
+                    `✨ [Effect: BUFF] ${target.id} 获得了 Buff: ${effect.parameters.buffId}`,
+                    { actionId: template.id, targetId: target.id, buffId: effect.parameters.buffId },
+                    LogVisibility.PLAYER,
+                    engineCtx
+                );
                 break;
             }
             default:
-                console.warn(`[EffectSystem] 未知的效果类型: ${effect.type}`);
+                logger.warn(`未知的效果类型: ${effect.type}`, null, engineCtx);
         }
     }
 }

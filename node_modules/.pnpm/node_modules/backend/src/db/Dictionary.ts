@@ -2,6 +2,9 @@
 import { ActionTemplate } from '@hard-vtt/shared';
 import { prisma } from './prisma.js';
 import { safeParse, safeParseArray, safeParseRecord } from '../utils/SafeJsonParser.js';
+import { Logger } from '../utils/Logger.js';
+
+const logger = Logger.create('DB:Dictionary');
 
 /**
  * 模拟内存数据库/JSON加载器
@@ -30,7 +33,7 @@ export class Dictionary {
                 range:        safeParse(t.rangeJson ?? '', { type: 'MELEE', distanceExpr: '1' }, `rangeJson of ${t.id}`)
             });
         }
-        console.log(`📚 成功从数据库加载 ${this.actions.size} 个技能模板.`);
+        logger.info(`📚 成功从数据库加载 ${this.actions.size} 个技能模板.`);
     }
 
     public static getAction(id: string): ActionTemplate | undefined {

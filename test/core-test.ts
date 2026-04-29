@@ -1,5 +1,8 @@
 import { EventEmitter } from 'events';
 import { create, all } from 'mathjs';
+import { Logger } from '../packages/backend/src/utils/Logger.js';
+
+const logger = Logger.create('Test:Core');
 
 // ==========================================
 // 1. Mock: Shared Types (模拟 @hard-vtt/shared)
@@ -297,6 +300,8 @@ class CombatEngine extends EventEmitter {
             const target = this.entities.get(event.targetId)!;
 
             if (event.phase === 'STARTUP') {
+                logger.game(`⚔️ [Action] ${actor.id} 执行了测试攻击!`, null, 'PLAYER' as any, { tick: this.currentTick, sceneId: 'test-scene' });
+
                 // 测试技能带暴击规则: d20 出 20 时增加暴击标签
                 const critRules: DiceRule[] = [
                     { condition: 'faceValue == 20', actionType: 'ADD_TAG', actionPayload: 'CRIT_SUCCESS' }
@@ -313,11 +318,11 @@ class CombatEngine extends EventEmitter {
                 });
 
                 const critStr = rolls.poolTags.includes('CRIT_SUCCESS') ? ' ⚡暴击!' : '';
-                console.log(`[Dice] 掷骰明细: ${JSON.stringify(rolls.dice.map(d => `${d.faceValue}${d.tags.length ? '(' + d.tags.join(',') + ')' : ''}`))}`);
-                console.log(`[Dice] 汇总标签: [${rolls.poolTags.join(', ')}], 总伤害: ${damage}`);
+                logger.debug(`掷骰明细: ${JSON.stringify(rolls.dice.map(d => `${d.faceValue}${d.tags.length ? '(' + d.tags.join(',') + ')' : ''}`))}`, null, { tick: this.currentTick, sceneId: 'test-scene' });
+                logger.debug(`汇总标签: [${rolls.poolTags.join(', ')}], 总伤害: ${damage}`, null, { tick: this.currentTick, sceneId: 'test-scene' });
 
                 target.resources.current['hp'] -= damage;
-                console.log(`💥 造成 ${damage} 点伤害${critStr}。${target.id} 剩余HP: ${target.resources.current['hp']}`);
+                logger.game(`💥 造成 ${damage} 点伤害${critStr}。${target.id} 剩余HP: ${target.resources.current['hp']}`, null, 'PLAYER' as any, { tick: this.currentTick, sceneId: 'test-scene' });
 
                 this.recordMutation(target.id, { 'resources.current.hp': target.resources.current['hp'] });
 
@@ -326,6 +331,7 @@ class CombatEngine extends EventEmitter {
                 this.eventQueue.push(recoveryEvent);
             }
             else if (event.phase === 'RECOVERY') {
+                logger.game(`🛡️ [Action] ${actor.id} 收招完成.`, null, 'PLAYER' as any, { tick: this.currentTick, sceneId: 'test-scene' });
                 actor.currentActionContext = undefined;
                 this.recordMutation(actor.id, { 'currentActionContext': null });
             }
@@ -524,7 +530,7 @@ async function runTests() {
         const engine = new CombatEngine();
 
         engine.on('STATE_MUTATED', (payload: any) => {
-            console.log(`  📡 广播状态差分 Tick ${payload.tick}: ${payload.mutations.length} 条变更`);
+            logger.info(`📡 广播状态差分 Tick ${payload.tick}: ${payload.mutations.length} 条变更`, null, { tick: payload.tick, sceneId: 'test-scene' });
         });
 
         const warrior: Entity = {

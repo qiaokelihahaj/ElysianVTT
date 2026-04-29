@@ -161,7 +161,7 @@ Client (WebSocket)                Backend                         Database
 |------|------|------|------|
 | ID 生成器 | `IdGenerator.ts` | ✅ | UUID v4 生成 |
 | 骰子内核 | `dice/DiceProcessor.ts`<br>`dice/DiceGenerator.ts` | ✅ | 独立的高效 NdM 骰池流水线，支持暴击标签、爆炸骰、重投策略及玩家介入改值。引入规则预编译(AST)机制，将数千颗筛子的运算降至 O(1) 原生比较复杂度。 |
-| 日志系统 | `Logger.ts` | ⬜ | 空桩 |
+| 日志系统 | `Logger.ts` | ✅ | 基于 shared 协议实现终端高亮、上下文透传的结构化日志 |
 | 向量运算 | `VectorMath.ts` | ⬜ | 空桩 |
 | JSON 解析 | `SafeJsonParser.ts` | ✅ | 安全 JSON 解析，防止脏数据崩溃 |
 
@@ -576,6 +576,7 @@ bootstrap()
 | 规则求值 | mathjs 沙箱 ✅、NdM 掷骰 ✅ | 复杂条件表达式、优势/劣势骰子 |
 | 网络层 | JOIN_SCENE ✅、CLIENT_INTENT ✅、STATE_MUTATED ✅ | VISUAL_FX 事件、断线托管、状态全量同步 |
 | 数据库 | Prisma Schema ✅、种子数据 ✅、Dictionary 加载 ✅ | Repository 抽象、SettlementService 回写 |
+| 日志协议 | LogPayload ✅、LogVisibility ✅、Logger.ts ✅ | 可接入可视化调试面板、Replay回放系统 |
 | 前端 | 类型依赖已引入 | **完全未开发**（仍是 Vite 模板） |
 
 ### 9.2 推荐下一步开发顺序
@@ -584,7 +585,7 @@ bootstrap()
 |--------|------|------|
 | 🔴 1 | **创建前端最小可用版本** | 目前零前端代码，无法端到端验证。需要：PixiJS 画布渲染、Zustand 状态订阅 WebSocket、简单的角色/网格渲染 |
 | 🟡 2 | **扩展 `DiceProcessor.ts`** | 目前已实现极速预编译骰池，支持 NdM。下一步可在此基础上扩展 D&D 规则集所需的优势/劣势(Advantage/Disadvantage) 双骰取高取低逻辑。 |
-| 🟡 3 | **实现 `Logger.ts`与精简日志** | 统一日志输出格式，确保包含 sceneId 等关键上下文信息，减少冗余并替换散落的 `console.log` |
+| ✅ 3 | ~~**实现 `Logger.ts`与精简日志**~~ | **已完成**。统一日志输出格式，确保包含 sceneId 等关键上下文信息，减少冗余并替换散落的 `console.log` |
 | 🟡 4 | **实现 `ClashPool.ts`（简化版）** | 同 Tick 多个事件按 actionPriority / speed / entityId 稳定排序 |
 | 🟢 5 | **填充 `app.ts` 空桩** | 将 Express 配置从 `index.ts` 内联代码迁移到 `app.ts` |
 | 🟢 6 | **实现 `ExploreEngine.ts`** | 探索模式即时结算引擎（移动引擎），支持无缝切战 |

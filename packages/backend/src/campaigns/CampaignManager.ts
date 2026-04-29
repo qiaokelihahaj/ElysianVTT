@@ -4,6 +4,9 @@ import { CombatEngine } from './engines/CombatEngine.js';
 import { prisma } from '../db/prisma.js';
 import { Entity } from '@hard-vtt/shared';
 import { safeParse } from '../utils/SafeJsonParser.js';
+import { Logger } from '../utils/Logger.js';
+
+const logger = Logger.create('CampaignManager');
 
 export class CampaignManager {
     // 内存中保存所有正在运行的场景/战斗引擎 (Key: sceneId)
@@ -54,9 +57,9 @@ export class CampaignManager {
 
         if (entitiesToMount.length > 0) {
             newEngine.mountEntities(entitiesToMount);
-            console.log(`[CampaignManager] 成功为场景 ${sceneId} 注水 ${entitiesToMount.length} 个实体`);
+            logger.info(`Successfully hydrated ${entitiesToMount.length} entities into scene ${sceneId}`, null, { sceneId });
         } else {
-            console.log(`[CampaignManager] 场景 ${sceneId} 目前为空`);
+            logger.info(`Scene ${sceneId} is currently empty`, null, { sceneId });
         }
 
         newEngine.on('STATE_MUTATED', (payload) => {

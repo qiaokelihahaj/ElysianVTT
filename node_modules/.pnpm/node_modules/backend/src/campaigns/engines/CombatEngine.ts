@@ -2,14 +2,13 @@
 import { EventEmitter } from 'events';
 import { 
     IEngineInstance, Tick, ClientIntent, Entity, EntityId, 
-    TickEvent, ActionExecutionEvent, StateMutationPayload 
+    TickEvent, ActionExecutionEvent, StateMutationPayload, LogVisibility
 } from '@hard-vtt/shared';
 import { PriorityQueue } from '../../core/engine/PriorityQueue.js';
 import { generateId } from '../../utils/IdGenerator.js';
 import { Dictionary } from '../../db/Dictionary.js';
 import { EffectSystem } from '../../core/systems/EffectSystem.js';
-
-// import { Dictionary } from '../../db/Dictionary'; // 用于读取 ActionTemplate
+import { Logger } from '../../utils/Logger.js';
 
 export class CombatEngine extends EventEmitter implements IEngineInstance {
     public engineId: string;
@@ -21,10 +20,20 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
     
     // 状态差分收集器 (每处理完一个 Tick 后清空并广播)
     private pendingMutations: StateMutationPayload = { tick: 0, mutations: [] };
+    
+    // 独立日志器
+    private logger: Logger;
 
     constructor(engineId: string) {
         super();
         this.engineId = engineId;
+        this.logger = Logger.create(`Engine:Combat`);
+        this.logger.info(`Engine created`, null, { sceneId: this.engineId });
+    }
+
+    // 封装一个内部使用的带 Tick 上下文的日志器
+    private logCtx() {
+        return { tick: this.currentTick, sceneId: this.engineId };
     }
 
     // 挂载实体进战斗
@@ -70,7 +79,7 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         };
 
         if (actor.currentActionContext) {
-             console.log(`[CombatEngine] ${actor.id} 的动作被打断`);
+             this.logger.debug(`${actor.id}'s action was interrupted`, null, this.logCtx());
              // 真实逻辑应标记旧事件为 CANCELLED
         }
 
@@ -136,10 +145,10 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             const targets = (actEvent.targetIds || []).map(id => this.entities.get(id)).filter(e => e) as Entity[];
 
             if (actEvent.phase === 'STARTUP') {
-                console.log(`⚔️ [Action] Tick ${this.currentTick}: ${actor.id} 执行了 ${template.id}!`);
+                this.logger.game(`⚔️ [Action] Tick ${this.currentTick}: ${actor.id} 执行了 ${template.id}!`, null, LogVisibility.PLAYER, this.logCtx());
                 
                 // 【核心替换】交由 EffectSystem 处理，代替原来的硬编码伤害
-                const mutations = EffectSystem.applyAction(template, actor, targets);
+                const mutations = EffectSystem.applyAction(template, actor, targets, this.logCtx());
                 
                 // 将改变写入本 Tick 的同步广播中
                 for (const [targetId, changes] of mutations.entries()) {
@@ -156,7 +165,7 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
                 this.eventQueue.push(recoveryEvent);
             } 
             else if (actEvent.phase === 'RECOVERY') {
-                console.log(`🛡️ [Action] Tick ${this.currentTick}: ${actor.id} 收招完成.`);
+                this.logger.game(`🛡️ [Action] Tick ${this.currentTick}: ${actor.id} 收招完成.`, null, LogVisibility.PLAYER, this.logCtx());
                 actor.currentActionContext = undefined;
                 this.recordMutation(actor.id, { 'currentActionContext': null });
             }

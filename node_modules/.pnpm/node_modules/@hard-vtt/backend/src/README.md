@@ -191,6 +191,34 @@ export interface VisualEventPayload {
         text?: string;        
     }>;
 }
+
+// ==========================================
+// 6. 日志协议与服务端输出 (Log Protocol)
+// ==========================================
+export enum LogLevel {
+    DEBUG = 0,   // 引擎底层推演
+    INFO = 1,    // 常规流程
+    WARN = 2,    // 异常但可恢复
+    ERROR = 3,   // 引擎错误崩溃
+    GAME = 4     // 游戏内核心事件（前端战斗面板展示）
+}
+
+export enum LogVisibility {
+    DEV = 'DEV',
+    GM = 'GM',
+    PLAYER = 'PLAYER'
+}
+
+export interface LogPayload {
+    timestamp: number;          
+    sceneId?: string;           
+    tick?: number;              
+    namespace: string;          
+    level: LogLevel;
+    visibility: LogVisibility;
+    message: string;            
+    meta?: any;                 
+}
 ```
 
 ---

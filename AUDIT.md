@@ -59,7 +59,7 @@
 | `packages/backend/src/network/VisibilityFilter.ts` | 实现或删除 |
 | `packages/backend/src/db/Repository.ts` | 实现或删除 |
 | `packages/backend/src/utils/DiceRoller.ts` | 实现或删除 |
-| `packages/backend/src/utils/Logger.ts` | 实现或删除 |
+| `packages/backend/src/utils/Logger.ts` | **已实现**。终端高亮、支持命名空间、Tick、SceneId 过滤并定义完整的 `LogPayload` 结构和 `LogVisibility` 访问权限。 |
 | `packages/backend/src/utils/VectorMath.ts` | 实现或删除 |
 
 ---

@@ -109,6 +109,35 @@ export interface DicePoolResult {
 }
 
 // ==========================================
+// 4. 日志协议 (Log Protocol)
+// ==========================================
+export enum LogLevel {
+    DEBUG = 0,   // 引擎底层推演（堆排序、事件压入等）
+    INFO = 1,    // 常规流程（连接建立、引擎初始化）
+    WARN = 2,    // 异常但可恢复（未找到目标等）
+    ERROR = 3,   // 引擎错误（沙箱执行崩溃等）
+    GAME = 4     // 游戏内核心事件（造成伤害、施加Buff等），这部分用于前端展示和回放
+}
+
+export enum LogVisibility {
+    DEV = 'DEV',       // 仅开发者可见（控制台及日志文件）
+    GM = 'GM',         // 开发者 + GM可见（如怪物隐身时的走位）
+    PLAYER = 'PLAYER'  // 所有人可见（战斗记录面板）
+}
+
+export interface LogPayload {
+    timestamp: number;          // 真实时间戳
+    sceneId?: string;           // 场景隔离上下文
+    tick?: number;              // 引擎当前 Tick（关键！）
+    namespace: string;          // 模块命名空间，如 'Network:Socket'
+    level: LogLevel;
+    visibility: LogVisibility;
+    message: string;            // 人类可读文本
+    meta?: any;                 // 附加结构化数据（如 Entity 差分、伤害数值）
+}
+
+
+// ==========================================
 // 4. 引擎核心调度 (Engine & Tick Queue)
 // ==========================================
 export type Tick = number;

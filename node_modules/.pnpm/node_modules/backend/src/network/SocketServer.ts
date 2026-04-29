@@ -3,9 +3,13 @@ import { Server, Socket } from 'socket.io';
 import { Server as HttpServer } from 'http';
 import { ClientIntent } from '@hard-vtt/shared';
 import { CampaignManager } from '../campaigns/CampaignManager.js';
+import { Logger } from '../utils/Logger.js';
+
+const logger = Logger.create('Network:Socket');
 
 export class SocketServer {
     private io: Server;
+
     private campaignManager: CampaignManager;
 
     constructor(httpServer: HttpServer) {
@@ -27,7 +31,7 @@ export class SocketServer {
      */
     private setupListeners() {
         this.io.on('connection', (socket: Socket) => {
-            console.log(`🔌 [Socket] 建立连接: ${socket.id}`);
+            logger.info(`Client connected: ${socket.id}`);
 
             /**
              * [场景加入] - 关键路径
@@ -39,7 +43,7 @@ export class SocketServer {
                 try {
                     // 1. 在 Socket.io 层面加入物理房间 (用于后续的 Diff 广播)
                     socket.join(sceneId);
-                    console.log(`🏠 [Socket] 玩家 ${actorId} 请求加入场景: ${sceneId}`);
+                    logger.info(`Player ${actorId} requested to join scene: ${sceneId}`, null, { sceneId });
 
                     // 2. 异步注水：获取或创建该场景的引擎实例
                     // 该方法会从数据库拉取 CharacterSheet 并注水到 Engine 内存中
@@ -53,7 +57,7 @@ export class SocketServer {
                     });
 
                 } catch (error) {
-                    console.error(`❌ [Socket] 加入场景失败:`, error);
+                    logger.error(`Failed to join scene:`, error, { sceneId });
                     socket.emit('ERROR', { code: 'JOIN_FAILED', message: '无法加载场景数据' });
                 }
             });
@@ -70,18 +74,18 @@ export class SocketServer {
                 
                 if (engine) {
                     // 验证 actorId (未来：确保该 socket 拥有操作此实体的权限)
-                    console.log(`📥 [Intent] 路由至场景 ${sceneId} | 类型: ${intent.intentType} | 发起者: ${intent.actorId}`);
+                    logger.debug(`Routed intent to scene ${sceneId} | Type: ${intent.intentType} | Actor: ${intent.actorId}`, intent, { sceneId });
                     
                     // 将意图塞进 Engine 的事件处理管道 (无需等待，异步处理)
                     engine.receiveIntent(intent);
                 } else {
-                    console.warn(`⚠️ [Intent] 收到无效路由请求: Scene ${sceneId} 不存在或未激活`);
+                    logger.warn(`Invalid intent route: Scene ${sceneId} not found or inactive`, null, { sceneId });
                     socket.emit('ERROR', { code: 'ENGINE_NOT_FOUND', message: '目标引擎未启动' });
                 }
             });
 
             socket.on('disconnect', () => {
-                console.log(`❌ [Socket] 连接断开: ${socket.id}`);
+                logger.info(`Client disconnected: ${socket.id}`);
                 // TODO: 在此处触发角色的“断线托管”或“离线持久化”逻辑
             });
         });
