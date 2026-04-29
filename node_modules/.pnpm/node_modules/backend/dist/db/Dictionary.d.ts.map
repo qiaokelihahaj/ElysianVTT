@@ -1,1 +1,0 @@
-{"version":3,"file":"Dictionary.d.ts","sourceRoot":"","sources":["../../src/db/Dictionary.ts"],"names":[],"mappings":"AACA,OAAO,EAAE,cAAc,EAAE,MAAM,kBAAkB,CAAC;AAIlD;;;GAGG;AACH,qBAAa,UAAU;IACnB,OAAO,CAAC,MAAM,CAAC,OAAO,CAAqC;WAIvC,aAAa;WAqBnB,SAAS,CAAC,EAAE,EAAE,MAAM,GAAG,cAAc,GAAG,SAAS;CAGlE"}
