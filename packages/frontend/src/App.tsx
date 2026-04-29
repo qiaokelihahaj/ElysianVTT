@@ -5,7 +5,7 @@ import { useGameStore } from './store/gameStore';
 import { HUD } from './ui/HUD';
 
 // [MVP] 假设测试场景名
-const MOCK_SCENE_ID = 'elysian-test-scene-1';
+const MOCK_SCENE_ID = 'room_1';
 
 function App() {
     useEffect(() => {
@@ -29,9 +29,7 @@ function App() {
 
         const handleSceneSync = (payload: { tick: number, entities: any[] }) => {
             console.log('[App] Received Scene Sync:', payload);
-            if (payload.entities && payload.entities.length > 0) {
-                useGameStore.getState().setInitialScene(payload.entities, payload.tick);
-            }
+            useGameStore.getState().setInitialScene(payload.entities, payload.tick);
         };
 
         socketClient.onStateMutated(handleMutation);

@@ -52,7 +52,7 @@ export class CampaignManager {
         const DEFAULT_TRANSFORM = { coords: { x: 0, y: 0, z: 0 }, planeId: sceneId, facing: 0 };
         const DEFAULT_PHYSICS   = { scaleClass: 1, collisionRadius: 0.5, mass: 50, movementModes: ['WALK'] };
 
-        let entitiesToMount: Entity[] = sheets.map(sheet => {
+        const entitiesToMount: Entity[] = sheets.map(sheet => {
             return {
                 id: sheet.id,
                 templateId: sheet.id,
@@ -63,22 +63,6 @@ export class CampaignManager {
                 activeEffects: []
             };
         });
-
-        // ==========================================
-        // MVP 自动 Mock 注入: 若当前物理房间为空，则生生塞入一个
-        // ==========================================
-        if (entitiesToMount.length === 0) {
-            entitiesToMount.push({
-                id: 'mock-online-hero',
-                templateId: 'hero',
-                type: 'ACTOR',
-                transform: { coords: { x: 300, y: 300, z: 0 }, facing: 45, planeId: sceneId },
-                physics: { scaleClass: 1, collisionRadius: 20, mass: 100, movementModes: ['WALK'] },
-                resources: { current: { hp: 100 }, max: { hp: 100 } },
-                activeEffects: []
-            });
-            logger.info(`[Mock] 房间为空，已自动在后端内存挂载 mock-online-hero`, null, { sceneId });
-        }
 
         if (entitiesToMount.length > 0) {
             newEngine.mountEntities(entitiesToMount);
