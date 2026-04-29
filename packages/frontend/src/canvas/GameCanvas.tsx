@@ -15,9 +15,11 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     useEffect(() => {
         if (!canvasRef.current) return;
 
+        let isMounted = true;
         const manager = RendererManager.getInstance();
 
         const initPixi = async () => {
+            if (!isMounted) return;
             await manager.initialize({
                 canvas: canvasRef.current!,
                 width,
@@ -25,10 +27,10 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
             });
         };
 
-        // Delay init to allow React mounting
         initPixi();
 
         return () => {
+            isMounted = false;
             // Cleanup on unmount
             manager.destroy();
         };

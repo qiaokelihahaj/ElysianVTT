@@ -3,7 +3,6 @@ import { GameCanvas } from './canvas/GameCanvas';
 import { socketClient } from './network/socketClient';
 import { useGameStore } from './store/gameStore';
 import { HUD } from './ui/HUD';
-import './App.css';
 
 function App() {
     useEffect(() => {

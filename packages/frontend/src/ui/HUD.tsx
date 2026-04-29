@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { useGameStore } from '../store/gameStore';
 
 export const HUD: React.FC = () => {
@@ -8,6 +8,58 @@ export const HUD: React.FC = () => {
     
     // Find first ACTOR representing player
     const hero = Object.values(entities).find(e => e.type === 'ACTOR');
+
+    // Chaos Mode State
+    const [isChaos, setIsChaos] = useState(false);
+
+    useEffect(() => {
+        if (!isChaos) return;
+
+        // Spawn mock enemies once when chaos starts if they don't exist
+        const store = useGameStore.getState();
+        const currentCount = Object.keys(store.entities).length;
+        if (currentCount < 5) {
+            for(let i = 0; i < 5 - currentCount; i++) {
+                store.addEntity({
+                    id: `enemy-mock-${Math.random()}`,
+                    templateId: 'goblin',
+                    type: 'ACTOR',
+                    transform: {
+                        coords: { x: Math.random() * window.innerWidth, y: Math.random() * window.innerHeight, z: 0 },
+                        facing: Math.random() * 360,
+                        planeId: 'ground'
+                    },
+                    physics: { scaleClass: 1, collisionRadius: 15, mass: 50, movementModes: ['WALK'] },
+                    resources: { current: { hp: 50 }, max: { hp: 50 } },
+                    activeEffects: []
+                });
+            }
+        }
+
+        // Simulate continuous backend ticks streaming in
+        // Updating all entities simultaneously and across massive distances!
+        const interval = setInterval(() => {
+            const currentState = useGameStore.getState();
+            const mutations = Object.values(currentState.entities).map(ent => ({
+                entityId: ent.id,
+                changes: {
+                    // Huge distance jumps simulating continuous multi-turn/tick movement
+                    "transform.coords.x": Math.max(50, Math.min(window.innerWidth - 50, ent.transform.coords.x + (Math.random() * 400 - 200))),
+                    "transform.coords.y": Math.max(50, Math.min(window.innerHeight - 50, ent.transform.coords.y + (Math.random() * 400 - 200))),
+                    "transform.facing": Math.random() * 360,
+                    // Simulate combat damage ticks modifying UI resources simultaneously
+                    "resources.current.hp": Math.max(1, Math.min(ent.resources.max?.hp || 100, ent.resources.current.hp + Math.floor(Math.random() * 21 - 10)))
+                }
+            }));
+
+            currentState.applyStateMutation({
+                tick: currentState.tick + 15,
+                mutations
+            });
+        }, 800); // Trigger a massive state diff every 800ms
+
+        return () => clearInterval(interval);
+    }, [isChaos]);
 
     return (
         <div className="absolute inset-0 pointer-events-none flex flex-col justify-between p-4">
@@ -56,6 +108,35 @@ export const HUD: React.FC = () => {
                     <button className="w-12 h-12 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-600 transition-colors flex items-center justify-center text-white font-bold group relative">
                         3
                         <span className="absolute -top-8 bg-black/80 px-2 py-1 rounded text-xs opacity-0 group-hover:opacity-100 whitespace-nowrap">Pass</span>
+                    </button>
+                    {/* Mock move button for testing interpolation */}
+                    <button 
+                        onClick={() => {
+                            if (!hero) return;
+                            useGameStore.getState().applyStateMutation({
+                                tick: tick + 20,
+                                mutations: [{
+                                    entityId: hero.id,
+                                    changes: {
+                                        "transform.coords.x": hero.transform.coords.x + (Math.random() * 100 - 50),
+                                        "transform.coords.y": hero.transform.coords.y + (Math.random() * 100 - 50),
+                                        "transform.facing": Math.random() * 360
+                                    }
+                                }]
+                            });
+                        }}
+                        className="w-12 h-12 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-600 transition-colors flex items-center justify-center text-white font-bold group relative ml-4"
+                    >
+                        ?
+                        <span className="absolute -top-8 bg-black/80 px-2 py-1 rounded text-xs opacity-0 group-hover:opacity-100 whitespace-nowrap">Test Random Move</span>
+                    </button>
+                    {/* Chaos simulation mode */}
+                    <button 
+                        onClick={() => setIsChaos(prev => !prev)}
+                        className={`w-12 h-12 rounded-lg ${isChaos ? 'bg-red-600 border-red-400' : 'bg-zinc-800 border-zinc-600 hover:bg-zinc-700'} transition-colors flex items-center justify-center text-white font-bold group relative ml-2`}
+                    >
+                        🔥
+                        <span className="absolute -top-8 bg-black/80 px-2 py-1 rounded text-xs opacity-0 group-hover:opacity-100 whitespace-nowrap">Toggle Chaos Mode</span>
                     </button>
                 </div>
             </div>

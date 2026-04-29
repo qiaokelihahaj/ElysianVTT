@@ -35,6 +35,7 @@ export class RendererManager {
             backgroundColor: 0x1a1a1a,
             resolution: window.devicePixelRatio || 1,
             autoDensity: true,
+            resizeTo: window
         });
 
         // Add layers
@@ -88,14 +89,14 @@ export class RendererManager {
 
                 if (!sprite) {
                     sprite = this.createPlaceholderEntity(entity.type);
+                    // Initial snap for new entities
+                    sprite.x = entity.transform.coords.x;
+                    sprite.y = entity.transform.coords.y;
+                    sprite.angle = entity.transform.facing;
+                    
                     this.entitySprites.set(id, sprite);
                     this.entityLayer.addChild(sprite);
                 }
-
-                // Update position (without interpolation for now)
-                sprite.x = entity.transform.coords.x;
-                sprite.y = entity.transform.coords.y;
-                sprite.rotation = entity.transform.facing;
             }
         });
     }
@@ -119,8 +120,36 @@ export class RendererManager {
         return g;
     }
 
-    private update(_dt: number) {
-        // Here we'll do interpolation for coords eventually
+    private update(dt: number) {
+        const state = useGameStore.getState();
+        const entities = state.entities;
+        
+        // 设定的平滑系数，值越近平滑程度越低 (1 = 瞬间到达, 0.1 = 平滑补间)
+        // 结合 deltaTime (dt) 使补间在不同帧率下尽可能一致
+        const LERP_FACTOR = 0.2; 
+        const adjustedLerp = 1 - Math.pow(1 - LERP_FACTOR, dt);
+        
+        for (const [id, sprite] of this.entitySprites) {
+            const entity = entities[id];
+            if (entity) {
+                // 1. 位置线性插值 (Linear Interpolation)
+                const targetX = entity.transform.coords.x;
+                const targetY = entity.transform.coords.y;
+                
+                sprite.x += (targetX - sprite.x) * adjustedLerp;
+                sprite.y += (targetY - sprite.y) * adjustedLerp;
+                
+                // 2. 角度朝向插值 (Shortest path rotation in degrees)
+                const targetFacing = entity.transform.facing;
+                let diff = targetFacing - sprite.angle;
+                
+                // 归一化差值到 [-180, 180] 之间，确保走最短弧线
+                while (diff < -180) diff += 360;
+                while (diff > 180) diff -= 360;
+                
+                sprite.angle += diff * adjustedLerp;
+            }
+        }
     }
 
     public destroy() {
@@ -129,7 +158,12 @@ export class RendererManager {
             this.unsubscribeStore = null;
         }
         if (this.app) {
-            this.app.destroy(true, { children: true });
+            // Fix PixiJS double invocation issues in React StrictMode
+            try {
+                this.app.destroy({ removeView: true }, true);
+            } catch(e) {
+                console.warn("[Renderer] Destroy error (often expected in StrictMode):", e);
+            }
             this.app = null;
         }
         this.entitySprites.clear();
