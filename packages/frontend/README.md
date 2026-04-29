@@ -69,6 +69,6 @@ pnpm --filter @hard-vtt/frontend build
 - [x] 配置基于 Zustand 与 Immer 的深层补丁状态树
 - [x] 基于原生 PixiJS `Application` 的命令式渲染器隔离
 - [x] Mock 数据映射与基础 HUD 测试
-- [ ] （下一步）在渲染层实现 `Tick` 状态间的**线性插值平滑移动（Interpolation）**
-- [ ] （下一步）`VISUAL_FX` 全局事件拦截器，渲染跳字（伤害/治疗文本）、技能光效
+- [x] （正在进行）在渲染层实现 `Tick` 状态间的**线性插值平滑移动（Interpolation）**
+- [x] （正在进行）`VISUAL_FX` 全局事件拦截器，渲染跳字（伤害/治疗文本）、技能光效
 - [ ] （下一步）构建基于指令意图（`IntentDispatcher`）的前端交互指令发送模块

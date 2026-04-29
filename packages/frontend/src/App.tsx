@@ -14,10 +14,19 @@ function App() {
             useGameStore.getState().applyStateMutation(payload);
         };
         
+        // Subscribe to visual fx
+        const handleVisualFx = (payload: any) => {
+            import('./canvas/RendererManager').then(({ RendererManager }) => {
+                RendererManager.getInstance().handleVisualFx(payload);
+            });
+        };
+
         socketClient.onStateMutated(handleMutation);
+        socketClient.onVisualFx(handleVisualFx);
 
         return () => {
             socketClient.offStateMutated(handleMutation);
+            socketClient.offVisualFx(handleVisualFx);
             socketClient.disconnect();
         };
     }, []);

@@ -40,17 +40,44 @@ export const HUD: React.FC = () => {
         // Updating all entities simultaneously and across massive distances!
         const interval = setInterval(() => {
             const currentState = useGameStore.getState();
-            const mutations = Object.values(currentState.entities).map(ent => ({
-                entityId: ent.id,
-                changes: {
-                    // Huge distance jumps simulating continuous multi-turn/tick movement
-                    "transform.coords.x": Math.max(50, Math.min(window.innerWidth - 50, ent.transform.coords.x + (Math.random() * 400 - 200))),
-                    "transform.coords.y": Math.max(50, Math.min(window.innerHeight - 50, ent.transform.coords.y + (Math.random() * 400 - 200))),
-                    "transform.facing": Math.random() * 360,
-                    // Simulate combat damage ticks modifying UI resources simultaneously
-                    "resources.current.hp": Math.max(1, Math.min(ent.resources.max?.hp || 100, ent.resources.current.hp + Math.floor(Math.random() * 21 - 10)))
+            const mutations = Object.values(currentState.entities).map(ent => {
+                const hpChange = Math.floor(Math.random() * 21 - 10); // -10 to +10
+
+                // Trigger a mock VISUAL_FX floating text matching the HP change
+                if (hpChange !== 0) {
+                    import('../canvas/RendererManager').then(({ RendererManager }) => {
+                        const evtType = hpChange < 0 ? 'damage' : 'heal';
+                        const textStr = hpChange < 0 ? `${hpChange}` : `+${hpChange}`;
+
+                        RendererManager.getInstance().handleVisualFx({
+                            tick: currentState.tick + 15,
+                            events: [
+                                {
+                                    eventId: `mock-fx-${Date.now()}-${ent.id}`,
+                                    eventType: 'UI_FLOATING_TEXT',
+                                    sourceId: ent.id,
+                                    targetId: ent.id,
+                                    fxTemplateId: evtType,
+                                    text: textStr,
+                                    durationMs: 1500
+                                }
+                            ]
+                        });
+                    });
                 }
-            }));
+
+                return {
+                    entityId: ent.id,
+                    changes: {
+                        // Huge distance jumps simulating continuous multi-turn/tick movement
+                        "transform.coords.x": Math.max(50, Math.min(window.innerWidth - 50, ent.transform.coords.x + (Math.random() * 400 - 200))),
+                        "transform.coords.y": Math.max(50, Math.min(window.innerHeight - 50, ent.transform.coords.y + (Math.random() * 400 - 200))),
+                        "transform.facing": Math.random() * 360,
+                        // Simulate combat damage ticks modifying UI resources simultaneously
+                        "resources.current.hp": Math.max(1, Math.min(ent.resources.max?.hp || 100, ent.resources.current.hp + hpChange))
+                    }
+                };
+            });
 
             currentState.applyStateMutation({
                 tick: currentState.tick + 15,

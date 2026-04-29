@@ -1,5 +1,13 @@
-import { Application, Container, Sprite, Graphics } from 'pixi.js';
+import { Application, Container, Sprite, Graphics, Text, TextStyle } from 'pixi.js';
 import { useGameStore } from '../store/gameStore';
+import type { VisualEventPayload } from '@hard-vtt/shared';
+
+interface FloatingTextAnim {
+    sprite: Text;
+    life: number;
+    maxLife: number;
+    velY: number;
+}
 
 export class RendererManager {
     private static instance: RendererManager;
@@ -12,6 +20,7 @@ export class RendererManager {
 
     // References to sprites
     private entitySprites: Map<string, Graphics | Sprite> = new Map();
+    private activeFloatingTexts: FloatingTextAnim[] = [];
 
     private unsubscribeStore: (() => void) | null = null;
 
@@ -57,9 +66,12 @@ export class RendererManager {
     private drawGrid() {
         const graphics = new Graphics();
         
-        for (let i = 0; i < 2000; i += 50) {
-            graphics.moveTo(i, 0).lineTo(i, 2000);
-            graphics.moveTo(0, i).lineTo(2000, i);
+        // 使用一个足够大的尺寸以覆盖高分辨率屏幕，且为未来的相机缩放/平移预留空间
+        const gridSize = 10000;
+        
+        for (let i = 0; i < gridSize; i += 50) {
+            graphics.moveTo(i, 0).lineTo(i, gridSize);
+            graphics.moveTo(0, i).lineTo(gridSize, i);
         }
         
         graphics.stroke({ width: 1, color: 0x333333 });
@@ -150,6 +162,70 @@ export class RendererManager {
                 sprite.angle += diff * adjustedLerp;
             }
         }
+
+        // 3. 浮动文字特效更新
+        for (let i = this.activeFloatingTexts.length - 1; i >= 0; i--) {
+            const fx = this.activeFloatingTexts[i];
+            fx.life -= dt * (1000 / 60); // approx ms based on 60fps
+            fx.sprite.y -= fx.velY * dt;
+            fx.sprite.alpha = fx.life / fx.maxLife;
+
+            if (fx.life <= 0) {
+                this.fxLayer.removeChild(fx.sprite);
+                fx.sprite.destroy();
+                this.activeFloatingTexts.splice(i, 1);
+            }
+        }
+    }
+
+    public handleVisualFx(payload: VisualEventPayload) {
+        payload.events.forEach(evt => {
+            if (evt.eventType === 'UI_FLOATING_TEXT' && evt.text) {
+                let startX = 0;
+                let startY = 0;
+
+                if (evt.targetId) {
+                    const ts = this.entitySprites.get(evt.targetId);
+                    if (ts) {
+                        startX = ts.x;
+                        startY = ts.y - 20; // 偏上一点
+                    }
+                } else if (evt.targetCoords) {
+                    startX = evt.targetCoords.x;
+                    startY = evt.targetCoords.y;
+                }
+
+                // If floating text starts with '+' or is 'heal' we color it green, else red
+                const isHeal = evt.text.startsWith('+') || evt.fxTemplateId === 'heal';
+                const color = isHeal ? 0x44ff44 : 0xff4444;
+
+                this.spawnFloatingText(evt.text, startX, startY, evt.durationMs || 1000, color);
+            }
+        });
+    }
+
+    private spawnFloatingText(text: string, x: number, y: number, duration: number, color: number) {
+        const textSprite = new Text({
+            text,
+            style: new TextStyle({
+                fontFamily: 'Arial',
+                fontSize: 24,
+                fill: color,
+                stroke: { color: 0x000000, width: 4 }
+            })
+        });
+
+        textSprite.anchor.set(0.5);
+        textSprite.position.set(x, y);
+
+        this.fxLayer.addChild(textSprite);
+
+        this.activeFloatingTexts.push({
+            sprite: textSprite,
+            life: duration,
+            maxLife: duration,
+            velY: 2 
+        });
     }
 
     public destroy() {
