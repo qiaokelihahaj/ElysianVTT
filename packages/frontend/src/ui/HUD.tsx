@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useGameStore } from '../store/gameStore';
+import { IntentDispatcher } from '../network/IntentDispatcher';
 
 export const HUD: React.FC = () => {
     // For now, we just subscribe to the first actor's component as an example
@@ -124,17 +125,26 @@ export const HUD: React.FC = () => {
             {/* Bottom Bar: Action bar */}
             <div className="flex justify-center pb-4">
                 <div className="bg-zinc-900/90 border border-zinc-700 p-2 rounded-xl pointer-events-auto backdrop-blur-md flex gap-2">
-                    <button className="w-12 h-12 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-600 transition-colors flex items-center justify-center text-white font-bold group relative">
+                    <button 
+                        onClick={() => hero && IntentDispatcher.dispatchCastAction(hero.id, 'heroic_strike')}
+                        className="w-12 h-12 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-600 transition-colors flex items-center justify-center text-white font-bold group relative"
+                    >
                         1
                         <span className="absolute -top-8 bg-black/80 px-2 py-1 rounded text-xs opacity-0 group-hover:opacity-100 whitespace-nowrap">Heroic Strike</span>
                     </button>
-                    <button className="w-12 h-12 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-600 transition-colors flex items-center justify-center text-white font-bold group relative">
+                    <button 
+                        onClick={() => hero && IntentDispatcher.dispatchMove(hero.id, { x: hero.transform.coords.x + 50, y: hero.transform.coords.y, z: 0 })}
+                        className="w-12 h-12 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-600 transition-colors flex items-center justify-center text-white font-bold group relative"
+                    >
                         2
-                        <span className="absolute -top-8 bg-black/80 px-2 py-1 rounded text-xs opacity-0 group-hover:opacity-100 whitespace-nowrap">Move</span>
+                        <span className="absolute -top-8 bg-black/80 px-2 py-1 rounded text-xs opacity-0 group-hover:opacity-100 whitespace-nowrap">Move +50x</span>
                     </button>
-                    <button className="w-12 h-12 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-600 transition-colors flex items-center justify-center text-white font-bold group relative">
+                    <button 
+                        onClick={() => hero && IntentDispatcher.dispatchInteract(hero.id, 'mock-chest-id')}
+                        className="w-12 h-12 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-600 transition-colors flex items-center justify-center text-white font-bold group relative"
+                    >
                         3
-                        <span className="absolute -top-8 bg-black/80 px-2 py-1 rounded text-xs opacity-0 group-hover:opacity-100 whitespace-nowrap">Pass</span>
+                        <span className="absolute -top-8 bg-black/80 px-2 py-1 rounded text-xs opacity-0 group-hover:opacity-100 whitespace-nowrap">Interact</span>
                     </button>
                     {/* Mock move button for testing interpolation */}
                     <button 
