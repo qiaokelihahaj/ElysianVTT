@@ -71,6 +71,7 @@ export interface ActionTemplate {
     resourceCost: Record<string, ExpressionString>; 
     range: { type: string; distanceExpr: ExpressionString; radiusExpr?: ExpressionString; };
     effects: ActionEffectPayload[];
+    diceRules?: DiceRule[];
 }
 
 export interface ActionEffectPayload {
@@ -78,6 +79,33 @@ export interface ActionEffectPayload {
     targetSelector: 'PRIMARY' | 'ALL_IN_AOE' | 'SELF';
     conditions?: ExpressionString[]; 
     parameters: Record<string, any>;
+}
+
+// ==========================================
+// 3b. 掷骰系统 (Dice Rolling Pipeline)
+// ==========================================
+export interface RawDie {
+    id: string;
+    sides: number;
+    faceValue: number;
+}
+
+export interface DiceRule {
+    condition: string;
+    actionType: 'ADD_TAG' | 'EXPLODE' | 'REROLL';
+    actionPayload?: string;
+}
+
+export interface ProcessedDie extends RawDie {
+    finalValue: number;
+    tags: string[];
+    isOverridden: boolean;
+}
+
+export interface DicePoolResult {
+    total: number;
+    dice: ProcessedDie[];
+    poolTags: string[];
 }
 
 // ==========================================

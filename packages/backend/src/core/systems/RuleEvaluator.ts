@@ -1,9 +1,9 @@
 import { create, all } from 'mathjs';
-import { Entity } from '@hard-vtt/shared';
+import { Entity, DiceRule, DicePoolResult } from '@hard-vtt/shared';
+import { DiceGenerator } from '../../utils/dice/DiceGenerator.js';
+import { DiceProcessor } from '../../utils/dice/DiceProcessor.js';
 
-// 1. 创建受限的 mathjs 实例
 const math = create(all);
-
 
 math.import({
     import: function () { throw new Error('Function import is disabled'); },
@@ -12,58 +12,94 @@ math.import({
     derivative: function () { throw new Error('Function derivative is disabled'); }
 }, { override: true });
 
-export class RuleEvaluator {
-    /**
-     * 安全计算表达式，例如: "actor.str + 3d6"
-     */
-    public static evaluate(
-        expression: string, 
-        context: { actor?: Entity; target?: Entity; [key: string]: any }
-    ): number {
-        try {
-            // 1. 构建嵌套作用域字典
-            const scope = this.buildScope(context);
-            
-            // 2. 拦截 "3d6" 等掷骰宏，替换为确定的常数
-            const parsedExpression = this.preprocessDiceRolls(expression);
+export interface EvaluationContext {
+    actor?: Entity;
+    target?: Entity;
+    diceRules?: DiceRule[];
+    overrides?: Record<string, number>;
+    [key: string]: any;
+}
 
-            // 3. 安全解析计算
+export interface EvaluationResult {
+    total: number;
+    rolls: DicePoolResult;
+}
+
+const DICE_REGEX = /(\d+)d(\d+)/g;
+
+export class RuleEvaluator {
+    public static evaluate(expression: string, context: EvaluationContext): EvaluationResult {
+        const scope = this.buildScope(context);
+        const diceRules = context.diceRules ?? [];
+        const overrides = context.overrides;
+
+        const allDice: DicePoolResult['dice'] = [];
+        const tagSeen = new Set<string>();
+        let diceTotal = 0;
+
+        const parsedExpression = expression.replace(DICE_REGEX, (match, n, m) => {
+            const count = Number(n);
+            const sides = Number(m);
+
+            const rawDice = DiceGenerator.generate(count, sides);
+            const result = DiceProcessor.process(rawDice, diceRules, overrides);
+            
+            diceTotal += result.total;
+
+            for (const die of result.dice) {
+                allDice.push(die);
+            }
+            for (const tag of result.poolTags) {
+                tagSeen.add(tag);
+            }
+
+            return result.total.toString();
+        });
+
+        const allTags = [...tagSeen];
+
+        scope.total = diceTotal;
+        scope.isCrit = allTags.includes('CRIT_SUCCESS');
+        scope.isFumble = allTags.includes('CRIT_FAILURE');
+        scope.poolTags = allTags;
+
+        try {
             const result = math.evaluate!(parsedExpression, scope);
-            return Number(result);
+            const finalTotal = Number(result);
+
+            const rolls: DicePoolResult = {
+                total: finalTotal,
+                dice: allDice,
+                poolTags: allTags
+            };
+
+            return { total: finalTotal, rolls };
         } catch (error) {
             console.error(`[RuleEvaluator] Failed to evaluate: ${expression}`, error);
-            return 0; // 出错时返回 0 防止引擎崩溃
+            const rolls: DicePoolResult = {
+                total: 0,
+                dice: allDice,
+                poolTags: allTags
+            };
+            return { total: 0, rolls };
         }
     }
 
-    private static buildScope(context: any): Record<string, any> {
+    private static buildScope(context: EvaluationContext): Record<string, any> {
         const scope: Record<string, any> = { actor: {}, target: {} };
-        
+
         if (context.actor?.resources?.current) {
             Object.entries(context.actor.resources.current).forEach(([key, val]) => {
                 scope.actor[key] = val;
             });
-            // 预留：未来可以在这里注入 actor.attributes (力量、敏捷等)
         }
-        
+
         if (context.target?.resources?.current) {
             Object.entries(context.target.resources.current).forEach(([key, val]) => {
                 scope.target[key] = val;
             });
         }
-        
-        return scope;
-    }
 
-    private static preprocessDiceRolls(expr: string): string {
-        // MVP 阶段：正则匹配 NdM (例如 2d6) 并替换为随机值
-        // 未来：这里应接入外部的 /utils/DiceRoller.ts 处理优势/劣势(Advantage/Disadvantage)
-        return expr.replace(/(\d+)d(\d+)/g, (match, n, m) => {
-            let total = 0;
-            for(let i = 0; i < Number(n); i++) {
-                total += Math.floor(Math.random() * Number(m)) + 1;
-            }
-            return total.toString();
-        });
+        return scope;
     }
 }

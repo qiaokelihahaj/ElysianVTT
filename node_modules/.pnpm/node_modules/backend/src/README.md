@@ -256,8 +256,11 @@ packages/backend/src/
 │
 └── utils/                  # 🛠️ 通用工具
     ├── VectorMath.ts       # N 维向量运算工具
-    ├── DiceRoller.ts       # 随机数与骰子模拟器 (支持 2d6+5 等字符串解析)
+    ├── dice/               # 🎲 高性能掷骰与规则系统
+    │   ├── DiceGenerator.ts # 伪随机数生成工厂支持
+    │   └── DiceProcessor.ts # 预编译规则(爆炸骰/重投)的极速评估引擎，支持玩家强行改值干预
     ├── Logger.ts           # 结构化日志系统
+    ├── SafeJsonParser.ts   # 安全 JSON 解析工具 (防止 DB 脏数据崩溃)
     └── IdGenerator.ts      # 全局唯一实体/事件 ID 生成器
 ```
 

@@ -62,7 +62,7 @@ ElysianVTT/
 │   │   │   ├── campaigns/   # CampaignManager、CombatEngine、ExploreEngine、SettlementService
 │   │   │   ├── network/     # SocketServer、IntentRouter、StateBroadcaster、VisibilityFilter
 │   │   │   ├── db/          # Prisma 客户端、Dictionary、Repository、种子数据
-│   │   │   └── utils/       # IdGenerator、DiceRoller、Logger、VectorMath
+│   │   │   └── utils/       # IdGenerator、dice/ (掷骰系统)、Logger、VectorMath、SafeJsonParser
 │   │   └── src/README.md    # 后端架构详细文档
 │   └── frontend/            # 表现层：React UI + PixiJS 画布 + Zustand 状态树
 │       └── src/

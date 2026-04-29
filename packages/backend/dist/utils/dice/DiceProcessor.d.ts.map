@@ -1,0 +1,1 @@
+{"version":3,"file":"DiceProcessor.d.ts","sourceRoot":"","sources":["../../../src/utils/dice/DiceProcessor.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,MAAM,EAAE,QAAQ,EAAgB,cAAc,EAAE,MAAM,kBAAkB,CAAC;AAoBlF,qBAAa,aAAa;WACR,OAAO,CACjB,OAAO,EAAE,MAAM,EAAE,EACjB,KAAK,EAAE,QAAQ,EAAE,EACjB,SAAS,CAAC,EAAE,MAAM,CAAC,MAAM,EAAE,MAAM,CAAC,GACnC,cAAc;CAoEpB"}

@@ -1,5 +1,5 @@
 // packages/backend/src/core/systems/EffectSystem.ts
-import { Entity, ActionTemplate, ActionEffectPayload } from '@hard-vtt/shared';
+import { Entity, ActionTemplate, ActionEffectPayload, DiceRule } from '@hard-vtt/shared';
 import { RuleEvaluator } from './RuleEvaluator.js'; // 记得 .js 后缀
 
 export class EffectSystem {
@@ -31,7 +31,7 @@ export class EffectSystem {
             }
 
             for (const target of resolvedTargets) {
-                this.executeEffect(effect, actor, target, recordChange);
+                this.executeEffect(effect, actor, target, template.diceRules, recordChange);
             }
         }
 
@@ -41,7 +41,8 @@ export class EffectSystem {
     private static executeEffect(
         effect: ActionEffectPayload, 
         actor: Entity, 
-        target: Entity, 
+        target: Entity,
+        diceRules: DiceRule[] | undefined,
         recordChange: (id: string, path: string, value: any) => void
     ) {
         const resKey = effect.parameters.resource;
@@ -50,7 +51,7 @@ export class EffectSystem {
         if (!resKey || !expr) return;
 
         // 计算公式值
-        const amount = RuleEvaluator.evaluate(expr, { actor, target });
+        const { total: amount } = RuleEvaluator.evaluate(expr, { actor, target, diceRules });
 
         switch (effect.type) {
             case 'DAMAGE': {

@@ -17,9 +17,8 @@ async function main() {
                 { type: 'DAMAGE', targetSelector: 'PRIMARY', parameters: { resource: 'hp', amountExpr: 'actor.str + 2d6' } },
                 { type: 'DAMAGE', targetSelector: 'PRIMARY', parameters: { resource: 'poise', amountExpr: '5' } }
             ]),
-            // 👈 播种新增的字段
             tagsJson: JSON.stringify(['ATTACK', 'MELEE', 'HEAVY']),
-            resourceCostJson: JSON.stringify({ mp: '0' }), // 假设重击不消耗MP
+            resourceCostJson: JSON.stringify({ mp: '0' }),
             rangeJson: JSON.stringify({ type: 'MELEE', distanceExpr: '1' })
         }
     });

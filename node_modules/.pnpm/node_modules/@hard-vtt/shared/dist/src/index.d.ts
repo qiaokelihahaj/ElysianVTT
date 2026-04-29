@@ -56,12 +56,33 @@ export interface ActionTemplate {
         radiusExpr?: ExpressionString;
     };
     effects: ActionEffectPayload[];
+    diceRules?: DiceRule[];
 }
 export interface ActionEffectPayload {
     type: 'DAMAGE' | 'HEAL' | 'APPLY_BUFF' | 'PUSH' | 'INTERRUPT';
     targetSelector: 'PRIMARY' | 'ALL_IN_AOE' | 'SELF';
     conditions?: ExpressionString[];
     parameters: Record<string, any>;
+}
+export interface RawDie {
+    id: string;
+    sides: number;
+    faceValue: number;
+}
+export interface DiceRule {
+    condition: string;
+    actionType: 'ADD_TAG' | 'EXPLODE' | 'REROLL';
+    actionPayload?: string;
+}
+export interface ProcessedDie extends RawDie {
+    finalValue: number;
+    tags: string[];
+    isOverridden: boolean;
+}
+export interface DicePoolResult {
+    total: number;
+    dice: ProcessedDie[];
+    poolTags: string[];
 }
 export type Tick = number;
 export interface TickEvent {

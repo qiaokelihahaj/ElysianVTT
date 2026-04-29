@@ -160,9 +160,10 @@ Client (WebSocket)                Backend                         Database
 | 模块 | 文件 | 状态 | 职责 |
 |------|------|------|------|
 | ID 生成器 | `IdGenerator.ts` | ✅ | UUID v4 生成 |
-| 骰子模拟 | `DiceRoller.ts` | ⬜ | 空桩，目前 NdM 由 RuleEvaluator 内联处理 |
+| 骰子内核 | `dice/DiceProcessor.ts`<br>`dice/DiceGenerator.ts` | ✅ | 独立的高效 NdM 骰池流水线，支持暴击标签、爆炸骰、重投策略及玩家介入改值。引入规则预编译(AST)机制，将数千颗筛子的运算降至 O(1) 原生比较复杂度。 |
 | 日志系统 | `Logger.ts` | ⬜ | 空桩 |
 | 向量运算 | `VectorMath.ts` | ⬜ | 空桩 |
+| JSON 解析 | `SafeJsonParser.ts` | ✅ | 安全 JSON 解析，防止脏数据崩溃 |
 
 #### 其他
 
@@ -177,16 +178,6 @@ Client (WebSocket)                Backend                         Database
 | 模块 | 状态 | 说明 |
 |------|------|------|
 | 全部源码 | ⬜ | 当前仍是 Vite + React 初始模板（计数器 demo），未集成 PixiJS / Zustand / socket.io-client |
-
-### 3.5 统计
-
-| 状态 | 数量 |
-|------|------|
-| ✅ 已实现 | 11 个模块 |
-| 🚧 部分实现 | 1 个模块 |
-| ⬜ 空桩/未实现 | 21 个模块 |
-
----
 
 ## 四、类型体系（`@hard-vtt/shared`）
 
@@ -591,13 +582,15 @@ bootstrap()
 
 | 优先级 | 任务 | 原因 |
 |--------|------|------|
-| 🔴 1 | **修复 `CampaignManager.ts` 双重 `mountEntities` 调用** | 当前行 43 和 49 各调用一次，导致实体重复挂载，是代码 Bug |
-| 🔴 2 | **创建前端最小可用版本** | 目前零前端代码，无法端到端验证。需要：PixiJS 画布渲染、Zustand 状态订阅 WebSocket、简单的角色/网格渲染 |
-| 🟡 3 | **实现 `DiceRoller.ts`** | 将 `RuleEvaluator` 中内联的 NdM 逻辑抽取到独立工具模块，支持优势/劣势 |
-| 🟡 4 | **实现 `Logger.ts`** | 统一日志输出，替换散落的 `console.log` |
-| 🟡 5 | **实现 `ClashPool.ts`（简化版）** | 同 Tick 多个事件按 actionPriority / speed / entityId 稳定排序 |
-| 🟢 6 | **填充 `app.ts` 空桩** | 将 Express 配置从 `index.ts` 内联代码迁移到 `app.ts` |
-| 🟢 7 | **实现 `ExploreEngine.ts`** | 探索模式即时结算引擎（移动引擎），支持无缝切战 |
+| 🔴 1 | **创建前端最小可用版本** | 目前零前端代码，无法端到端验证。需要：PixiJS 画布渲染、Zustand 状态订阅 WebSocket、简单的角色/网格渲染 |
+| 🟡 2 | **扩展 `DiceProcessor.ts`** | 目前已实现极速预编译骰池，支持 NdM。下一步可在此基础上扩展 D&D 规则集所需的优势/劣势(Advantage/Disadvantage) 双骰取高取低逻辑。 |
+| 🟡 3 | **实现 `Logger.ts`与精简日志** | 统一日志输出格式，确保包含 sceneId 等关键上下文信息，减少冗余并替换散落的 `console.log` |
+| 🟡 4 | **实现 `ClashPool.ts`（简化版）** | 同 Tick 多个事件按 actionPriority / speed / entityId 稳定排序 |
+| 🟢 5 | **填充 `app.ts` 空桩** | 将 Express 配置从 `index.ts` 内联代码迁移到 `app.ts` |
+| 🟢 6 | **实现 `ExploreEngine.ts`** | 探索模式即时结算引擎（移动引擎），支持无缝切战 |
+| 🟢 7 | **数据映射解耦与 DB 查询优化** | 将 DB Sheet -> Engine Entity 转换抽离为独立函数，并在 Prisma 中应用 `select` 精简读取字段，减少 I/O 压力并解耦领域层 |
+| 🟢 8 | **场景生命周期管理** | 增加 Scene/Engine 的内存清理机制（如引用计数或 TTL 空闲回收），防止场景过多导致内存泄漏 |
+| 🟢 9 | **解耦事件监听与广播** | 将 Socket 广播逻辑从 Engine 初始化中抽离到专门的处理函数，便于后续扩展 AI 观察者或回放系统 |
 
 ---
 
