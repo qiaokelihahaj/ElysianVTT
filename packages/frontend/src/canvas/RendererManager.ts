@@ -1,6 +1,7 @@
 import { Application, Container, Sprite, Graphics, Text, TextStyle } from 'pixi.js';
 import { useGameStore } from '../store/gameStore';
 import type { VisualEventPayload } from '@hard-vtt/shared';
+import { IntentDispatcher } from '../network/IntentDispatcher';
 
 interface FloatingTextAnim {
     sprite: Text;
@@ -17,10 +18,12 @@ export class RendererManager {
     public mapLayer = new Container();
     public entityLayer = new Container();
     public fxLayer = new Container();
+    public previewLayer = new Container(); // For phantoms and indicators
 
     // References to sprites
     private entitySprites: Map<string, Graphics | Sprite> = new Map();
     private activeFloatingTexts: FloatingTextAnim[] = [];
+    private phantomHero: Graphics | null = null;
 
     private unsubscribeStore: (() => void) | null = null;
 
@@ -50,7 +53,31 @@ export class RendererManager {
         // Add layers
         this.app.stage.addChild(this.mapLayer);
         this.app.stage.addChild(this.entityLayer);
+        this.app.stage.addChild(this.previewLayer);
         this.app.stage.addChild(this.fxLayer);
+
+        // Make map layer interactive for moving
+        this.mapLayer.eventMode = 'static';
+        this.mapLayer.on('pointerdown', (e) => {
+            const state = useGameStore.getState();
+            
+            if (state.uiState.mode === 'SELECT_MOVE_TARGET') {
+                const targetPos = this.mapLayer.toLocal(e.global);
+                // Sets pending coordinate when clicking in map rather than dispatching right away
+                state.setPendingMoveCoords({ x: targetPos.x, y: targetPos.y, z: 0 });
+            }
+        });
+
+        // Initialize phantom
+        this.phantomHero = new Graphics();
+        this.phantomHero.circle(0, 0, 20);
+        this.phantomHero.stroke({ width: 2, color: 0x3498db });
+        // facing indicator
+        this.phantomHero.moveTo(0, 0);
+        this.phantomHero.lineTo(20, 0);
+        this.phantomHero.alpha = 0.5;
+        this.phantomHero.visible = false; // hidden initially
+        this.previewLayer.addChild(this.phantomHero);
 
         // Map layer temp grid
         this.drawGrid();
@@ -69,6 +96,10 @@ export class RendererManager {
         // 使用一个足够大的尺寸以覆盖高分辨率屏幕，且为未来的相机缩放/平移预留空间
         const gridSize = 10000;
         
+        // 也可以画一个半透明的底图充当 hitArea 确保没有线条的地方也能响应 mapLayer pointerdown
+        graphics.rect(0, 0, gridSize, gridSize);
+        graphics.fill({ color: 0x000000, alpha: 0.001 });
+
         for (let i = 0; i < gridSize; i += 50) {
             graphics.moveTo(i, 0).lineTo(i, gridSize);
             graphics.moveTo(0, i).lineTo(gridSize, i);
@@ -100,7 +131,7 @@ export class RendererManager {
                 let sprite = this.entitySprites.get(id);
 
                 if (!sprite) {
-                    sprite = this.createPlaceholderEntity(entity.type);
+                    sprite = this.createPlaceholderEntity(entity.type, id);
                     // Initial snap for new entities
                     sprite.x = entity.transform.coords.x;
                     sprite.y = entity.transform.coords.y;
@@ -110,10 +141,22 @@ export class RendererManager {
                     this.entityLayer.addChild(sprite);
                 }
             }
+
+            // Sync UiState for Ghost Phantom
+            const uiState = state.uiState;
+            if (this.phantomHero) {
+                if (uiState.mode === 'SELECT_MOVE_TARGET' && uiState.pendingMoveCoords) {
+                    this.phantomHero.visible = true;
+                    this.phantomHero.x = uiState.pendingMoveCoords.x;
+                    this.phantomHero.y = uiState.pendingMoveCoords.y;
+                } else {
+                    this.phantomHero.visible = false;
+                }
+            }
         });
     }
 
-    private createPlaceholderEntity(type: string): Graphics {
+    private createPlaceholderEntity(type: string, id: string): Graphics {
         const g = new Graphics();
         if (type === 'ACTOR') {
             g.circle(0, 0, 20);
@@ -129,6 +172,26 @@ export class RendererManager {
             g.circle(0, 0, 5);
             g.fill(0xe74c3c); // Red projectile
         }
+
+        // Enable interaction with entities
+        g.eventMode = 'static';
+        g.cursor = 'pointer';
+        g.on('pointerdown', (e) => {
+            e.stopPropagation(); // 阻止事件冒泡到地图导致错误寻路
+            
+            const state = useGameStore.getState();
+            const hero = Object.values(state.entities).find(ent => ent.type === 'ACTOR');
+            
+            if (hero && hero.id !== id) {
+                // 如果这是敌人或物品，派发交互或攻击意图
+                if (type === 'ACTOR') {
+                    IntentDispatcher.dispatchCastAction(hero.id, 'basic_attack', [id]);
+                } else {
+                    IntentDispatcher.dispatchInteract(hero.id, id);
+                }
+            }
+        });
+
         return g;
     }
 
@@ -163,7 +226,13 @@ export class RendererManager {
             }
         }
 
-        // 3. 浮动文字特效更新
+        // 3. Phantom Pulse effect
+        if (this.phantomHero && this.phantomHero.visible) {
+            this.phantomHero.alpha = 0.4 + Math.sin(Date.now() / 200) * 0.2;
+            this.phantomHero.rotation += 0.05 * dt; // spinning phantom
+        }
+
+        // 4. 浮动文字特效更新
         for (let i = this.activeFloatingTexts.length - 1; i >= 0; i--) {
             const fx = this.activeFloatingTexts[i];
             fx.life -= dt * (1000 / 60); // approx ms based on 60fps

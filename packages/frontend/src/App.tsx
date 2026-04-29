@@ -4,10 +4,16 @@ import { socketClient } from './network/socketClient';
 import { useGameStore } from './store/gameStore';
 import { HUD } from './ui/HUD';
 
+// [MVP] 假设测试场景名
+const MOCK_SCENE_ID = 'elysian-test-scene-1';
+
 function App() {
     useEffect(() => {
         // Connect WS on mount
         socketClient.connect();
+
+        // 建立连接后立刻尝试加入场景
+        socketClient.joinScene(MOCK_SCENE_ID);
 
         // Subscribe to state mutation
         const handleMutation = (payload: any) => {
@@ -21,43 +27,23 @@ function App() {
             });
         };
 
+        const handleSceneSync = (payload: { tick: number, entities: any[] }) => {
+            console.log('[App] Received Scene Sync:', payload);
+            if (payload.entities && payload.entities.length > 0) {
+                useGameStore.getState().setInitialScene(payload.entities, payload.tick);
+            }
+        };
+
         socketClient.onStateMutated(handleMutation);
         socketClient.onVisualFx(handleVisualFx);
+        socketClient.onSceneSync(handleSceneSync);
 
         return () => {
             socketClient.offStateMutated(handleMutation);
             socketClient.offVisualFx(handleVisualFx);
+            socketClient.offSceneSync(handleSceneSync);
             socketClient.disconnect();
         };
-    }, []);
-
-    // For testing/mocking during dev before UI is complete
-    useEffect(() => {
-        // Mock add test entity if empty
-        const store = useGameStore.getState();
-        if (Object.keys(store.entities).length === 0) {
-            store.addEntity({
-                id: 'test-entity',
-                templateId: 'hero',
-                type: 'ACTOR',
-                transform: {
-                    coords: { x: 300, y: 300, z: 0 },
-                    facing: 45,
-                    planeId: 'ground'
-                },
-                physics: {
-                    scaleClass: 1,
-                    collisionRadius: 20,
-                    mass: 100,
-                    movementModes: ['WALK']
-                },
-                resources: {
-                    current: { hp: 100 },
-                    max: { hp: 100 }
-                },
-                activeEffects: []
-            });
-        }
     }, []);
 
     return (

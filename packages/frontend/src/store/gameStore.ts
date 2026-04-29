@@ -1,23 +1,41 @@
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
-import type { Entity, StateMutationPayload } from '@hard-vtt/shared';
+import type { Entity, StateMutationPayload, Vector3D } from '@hard-vtt/shared';
 import { setNestedProperty } from '../utils/objectUtils';
+
+export interface UiState {
+    mode: 'IDLE' | 'SELECT_MOVE_TARGET' | 'SELECT_ACTION_TARGET';
+    pendingMoveCoords: Vector3D | null;
+    activeActionId: string | null;
+}
 
 interface GameState {
     tick: number;
     entities: Record<string, Entity>;
+    uiState: UiState;
     
     // Actions
     setInitialScene: (entities: Entity[], tick: number) => void;
     applyStateMutation: (payload: StateMutationPayload) => void;
     addEntity: (entity: Entity) => void;
     removeEntity: (entityId: string) => void;
+    
+    // UI Actions
+    setUiMode: (mode: UiState['mode']) => void;
+    setPendingMoveCoords: (coords: Vector3D | null) => void;
+    setActiveActionId: (actionId: string | null) => void;
+    resetUiState: () => void;
 }
 
 export const useGameStore = create<GameState>()(
     immer((set) => ({
         tick: 0,
         entities: {},
+        uiState: {
+            mode: 'IDLE',
+            pendingMoveCoords: null,
+            activeActionId: null
+        },
 
         setInitialScene: (entities, tick) => set((state) => {
             state.tick = tick;
@@ -49,6 +67,21 @@ export const useGameStore = create<GameState>()(
 
         removeEntity: (entityId) => set((state) => {
             delete state.entities[entityId];
+        }),
+
+        setUiMode: (mode) => set((state) => { 
+            state.uiState.mode = mode; 
+            if (mode === 'IDLE') {
+                state.uiState.pendingMoveCoords = null;
+                state.uiState.activeActionId = null;
+            }
+        }),
+        setPendingMoveCoords: (coords) => set((state) => { state.uiState.pendingMoveCoords = coords; }),
+        setActiveActionId: (actionId) => set((state) => { state.uiState.activeActionId = actionId; }),
+        resetUiState: () => set((state) => {
+            state.uiState.mode = 'IDLE';
+            state.uiState.pendingMoveCoords = null;
+            state.uiState.activeActionId = null;
         }),
     }))
 );

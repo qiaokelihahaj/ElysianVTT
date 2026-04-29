@@ -6,6 +6,8 @@ export const HUD: React.FC = () => {
     // For now, we just subscribe to the first actor's component as an example
     const entities = useGameStore(state => state.entities);
     const tick = useGameStore(state => state.tick);
+    const uiState = useGameStore(state => state.uiState);
+    const { setUiMode, resetUiState } = useGameStore.getState();
     
     // Find first ACTOR representing player
     const hero = Object.values(entities).find(e => e.type === 'ACTOR');
@@ -122,8 +124,40 @@ export const HUD: React.FC = () => {
                 </div>
             </div>
 
+            {/* Middle: Overlay Modals when active */}
+            {uiState.mode === 'SELECT_MOVE_TARGET' && (
+                <div className="flex-1 flex justify-center items-end pb-8">
+                    <div className="bg-zinc-900/90 border border-amber-500/50 p-4 rounded-xl pointer-events-auto backdrop-blur-md flex items-center justify-between gap-6 shadow-lg shadow-amber-500/10">
+                        <div className="text-zinc-200">
+                            <h3 className="font-bold text-amber-400">Select Move Target</h3>
+                            <p className="text-sm">Click on the map to set a path, then confirm.</p>
+                        </div>
+                        <div className="flex gap-2">
+                            <button 
+                                onClick={() => resetUiState()}
+                                className="px-4 py-2 rounded bg-zinc-800 hover:bg-zinc-700 text-white font-medium transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button 
+                                onClick={() => {
+                                    if (hero && uiState.pendingMoveCoords) {
+                                        IntentDispatcher.dispatchMove(hero.id, uiState.pendingMoveCoords);
+                                        resetUiState();
+                                    }
+                                }}
+                                disabled={!uiState.pendingMoveCoords}
+                                className="px-4 py-2 rounded bg-amber-600 hover:bg-amber-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium transition-colors"
+                            >
+                                Confirm Move
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Bottom Bar: Action bar */}
-            <div className="flex justify-center pb-4">
+            <div className={`flex justify-center pb-4 ${uiState.mode !== 'IDLE' ? 'opacity-30 pointer-events-none' : ''}`}>
                 <div className="bg-zinc-900/90 border border-zinc-700 p-2 rounded-xl pointer-events-auto backdrop-blur-md flex gap-2">
                     <button 
                         onClick={() => hero && IntentDispatcher.dispatchCastAction(hero.id, 'heroic_strike')}
@@ -133,11 +167,11 @@ export const HUD: React.FC = () => {
                         <span className="absolute -top-8 bg-black/80 px-2 py-1 rounded text-xs opacity-0 group-hover:opacity-100 whitespace-nowrap">Heroic Strike</span>
                     </button>
                     <button 
-                        onClick={() => hero && IntentDispatcher.dispatchMove(hero.id, { x: hero.transform.coords.x + 50, y: hero.transform.coords.y, z: 0 })}
-                        className="w-12 h-12 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-600 transition-colors flex items-center justify-center text-white font-bold group relative"
+                        onClick={() => hero && setUiMode('SELECT_MOVE_TARGET')}
+                        className="w-12 h-12 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-amber-600/50 transition-colors flex items-center justify-center text-amber-400 font-bold group relative shadow-inner"
                     >
                         2
-                        <span className="absolute -top-8 bg-black/80 px-2 py-1 rounded text-xs opacity-0 group-hover:opacity-100 whitespace-nowrap">Move +50x</span>
+                        <span className="absolute -top-8 bg-black/80 px-2 py-1 rounded text-xs opacity-0 group-hover:opacity-100 whitespace-nowrap text-white">Toggle Move Mode</span>
                     </button>
                     <button 
                         onClick={() => hero && IntentDispatcher.dispatchInteract(hero.id, 'mock-chest-id')}

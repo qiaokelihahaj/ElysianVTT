@@ -61,6 +61,14 @@ class SocketClient {
     public offVisualFx(callback: (payload: VisualEventPayload) => void) {
         this.socket.off('VISUAL_FX', callback);
     }
+
+    public onSceneSync(callback: (payload: { tick: number, entities: import('@hard-vtt/shared').Entity[] }) => void) {
+        this.socket.on('SCENE_SYNC', callback);
+    }
+
+    public offSceneSync(callback: (payload: { tick: number, entities: import('@hard-vtt/shared').Entity[] }) => void) {
+        this.socket.off('SCENE_SYNC', callback);
+    }
 }
 
 export const socketClient = new SocketClient();

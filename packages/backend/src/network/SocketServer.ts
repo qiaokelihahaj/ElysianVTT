@@ -35,26 +35,34 @@ export class SocketServer {
 
             /**
              * [场景加入] - 关键路径
-             * 玩家通过此事件进入特定的战斗或探索场景
              */
-            socket.on('JOIN_SCENE', async (data: { sceneId: string, actorId: string }) => {
-                const { sceneId, actorId } = data;
+            socket.on('JOIN_SCENE', async (data: { sceneId: string, actorId?: string }) => {
+                const { sceneId, actorId = 'guest' } = data;
 
                 try {
                     logger.info(`Player ${actorId} requested to join scene: ${sceneId}`, null, { sceneId });
 
                     // 1. 异步注水：获取或创建该场景的引擎实例
-                    // 该方法会从数据库拉取 CharacterSheet 并注水到 Engine 内存中
-                    await this.campaignManager.getOrCreateEngine(sceneId);
+                    const engine = await this.campaignManager.getOrCreateEngine(sceneId);
                     
-                    // 2. 在 Socket.io 层面加入物理房间 (用于后续的 Diff 广播)
+                    // 2. 在 Socket.io 层面加入物理房间
                     socket.join(sceneId);
+
+                    // 记录一下这个 socket 的当前关联信息
+                    (socket as any).currentSceneId = sceneId;
+                    (socket as any).currentActorId = actorId;
                     
                     // 3. 回馈客户端
                     socket.emit('JOIN_SUCCESS', { 
                         sceneId, 
                         serverTime: Date.now(),
                         message: `Successfully entered ${sceneId}` 
+                    });
+
+                    // 4. 下发该场景全部实体以便前端完成初始态构建
+                    socket.emit('SCENE_SYNC', {
+                        tick: engine.currentTick,
+                        entities: engine.getAllEntities()
                     });
 
                 } catch (error) {
@@ -65,19 +73,21 @@ export class SocketServer {
 
             /**
              * [客户端意图] - 指令分发
-             * 处理来自玩家的所有战术动作 (移动、攻击、施法)
              */
-            socket.on('CLIENT_INTENT', async (data: { sceneId: string, intent: ClientIntent }) => {
-                const { sceneId, intent } = data;
+            socket.on('CLIENT_INTENT', async (intent: ClientIntent) => {
+                const sceneId = (socket as any).currentSceneId;
                 
+                if (!sceneId) {
+                    logger.warn(`Intent dropped: Socket ${socket.id} has not joined any scene`);
+                    socket.emit('ERROR', { code: 'NOT_IN_SCENE', message: '尚未加入任何场景' });
+                    return;
+                }
+
                 // 路由意图：根据场景 ID 寻找对应的 Engine 实例
                 const engine = await this.campaignManager.getEngine(sceneId);
                 
                 if (engine) {
-                    // 验证 actorId (未来：确保该 socket 拥有操作此实体的权限)
                     logger.debug(`Routed intent to scene ${sceneId} | Type: ${intent.intentType} | Actor: ${intent.actorId}`, intent, { sceneId });
-                    
-                    // 将意图塞进 Engine 的事件处理管道 (无需等待，异步处理)
                     engine.receiveIntent(intent);
                 } else {
                     logger.warn(`Invalid intent route: Scene ${sceneId} not found or inactive`, null, { sceneId });

@@ -36,6 +36,10 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         return { tick: this.currentTick, sceneId: this.engineId };
     }
 
+    public getAllEntities(): Entity[] {
+        return Array.from(this.entities.values());
+    }
+
     // 挂载实体进战斗
     public mountEntities(entities: Entity[]): void {
         for (const entity of entities) {
@@ -55,42 +59,80 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         return removed;
     }
 
-    // 接收客户端指令 (例如玩家点击释放火球术)
+    // 接收客户端指令 (例如玩家点击释放火球术或移动)
     public receiveIntent(intent: ClientIntent): void {
         const actor = this.entities.get(intent.actorId);
-        if (!actor || intent.intentType !== 'CAST_ACTION' || !intent.payload.actionTemplateId) return;
+        if (!actor) return;
 
-        // 从字典查询技能模板
-        const template = Dictionary.getAction(intent.payload.actionTemplateId);
-        if (!template) {
-            this.logger.warn(`技能 ${intent.payload.actionTemplateId} 不存在`);
+        if (intent.intentType === 'MOVE' && intent.payload.targetCoords) {
+            // MVP 移动：直接瞬间位移（前端通过 Lerp 平滑）
+            const targetPos = intent.payload.targetCoords;
+            this.logger.game(`🏃 [Move] Tick ${this.currentTick}: ${actor.id} 移动到 (${targetPos.x.toFixed(1)}, ${targetPos.y.toFixed(1)})`, null, LogVisibility.PLAYER, this.logCtx());
+            
+            // 简单的坐标修改
+            actor.transform.coords.x = targetPos.x;
+            actor.transform.coords.y = targetPos.y;
+
+            // 记录状态差分
+            this.recordMutation(actor.id, {
+                'transform.coords.x': targetPos.x,
+                'transform.coords.y': targetPos.y
+            });
+
+            // 同时派发一个飘字特效给前端，证明服务端收到
+            this.emit('VISUAL_FX', {
+                tick: this.currentTick,
+                events: [{
+                    eventId: generateId(),
+                    eventType: 'UI_FLOATING_TEXT',
+                    sourceId: actor.id,
+                    targetId: actor.id,
+                    fxTemplateId: 'info',
+                    text: 'Moving!',
+                    durationMs: 1000
+                }]
+            });
+            
+            // 前进 Tick 以反映移动花费的时间 (比如1平米1tick)
+            this.currentTick += 10;
+            this.pendingMutations.tick = this.currentTick;
+            this.broadcastMutations();
             return;
         }
 
-        const startupEvent: ActionExecutionEvent = {
-            eventId: generateId(),
-            eventType: 'ACTION_PHASE',
-            targetTick: this.currentTick + template.timeCost.startupTicks, // 【动态获取前摇】
-            status: 'PENDING',
-            actorId: intent.actorId,
-            targetIds: intent.payload.targetIds,
-            actionTemplateId: template.id,
-            phase: 'STARTUP'
-        };
+        if (intent.intentType === 'CAST_ACTION' && intent.payload.actionTemplateId) {
+            // 从字典查询技能模板
+            const template = Dictionary.getAction(intent.payload.actionTemplateId);
+            if (!template) {
+                this.logger.warn(`技能 ${intent.payload.actionTemplateId} 不存在`);
+                return;
+            }
 
-        if (actor.currentActionContext) {
-             this.logger.debug(`${actor.id}'s action was interrupted`, null, this.logCtx());
-             // 真实逻辑应标记旧事件为 CANCELLED
+            const startupEvent: ActionExecutionEvent = {
+                eventId: generateId(),
+                eventType: 'ACTION_PHASE',
+                targetTick: this.currentTick + template.timeCost.startupTicks, // 【动态获取前摇】
+                status: 'PENDING',
+                actorId: intent.actorId,
+                targetIds: intent.payload.targetIds,
+                actionTemplateId: template.id,
+                phase: 'STARTUP'
+            };
+
+            if (actor.currentActionContext) {
+                 this.logger.debug(`${actor.id}'s action was interrupted`, null, this.logCtx());
+                 // 真实逻辑应标记旧事件为 CANCELLED
+            }
+
+            actor.currentActionContext = {
+                actionId: startupEvent.eventId,
+                phase: 'STARTUP',
+                resolveTick: startupEvent.targetTick
+            };
+
+            this.eventQueue.push(startupEvent);
+            this.processQueue();
         }
-
-        actor.currentActionContext = {
-            actionId: startupEvent.eventId,
-            phase: 'STARTUP',
-            resolveTick: startupEvent.targetTick
-        };
-
-        this.eventQueue.push(startupEvent);
-        this.processQueue();
     }
 
     /**
