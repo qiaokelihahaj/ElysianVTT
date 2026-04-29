@@ -1,1 +1,0 @@
-{"version":3,"file":"DiceGenerator.d.ts","sourceRoot":"","sources":["../../../src/utils/dice/DiceGenerator.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,MAAM,EAAE,MAAM,kBAAkB,CAAC;AAG1C,qBAAa,aAAa;WACR,QAAQ,CAAC,KAAK,EAAE,MAAM,EAAE,KAAK,EAAE,MAAM,GAAG,MAAM,EAAE;WAYhD,WAAW,CAAC,KAAK,EAAE,MAAM,GAAG,MAAM;CAOnD"}
