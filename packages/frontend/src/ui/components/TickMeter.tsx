@@ -4,19 +4,19 @@ import { useGameStore } from '../../store/gameStore';
 type LayoutMode = 'lanes' | 'overlay' | 'compact';
 
 const LANE_COLORS = [
-    { bg: '#f97316', fg: '#fff' },
-    { bg: '#6366f1', fg: '#fff' },
-    { bg: '#22c55e', fg: '#000' },
-    { bg: '#ec4899', fg: '#fff' },
-    { bg: '#14b8a6', fg: '#000' },
-    { bg: '#facc15', fg: '#000' },
+    { bg: '#ff6b35', fg: '#fff' },  // 更饱和的橙色
+    { bg: '#4f46e5', fg: '#fff' },  // 更深的靛蓝
+    { bg: '#16a34a', fg: '#fff' },  // 更深的绿色
+    { bg: '#db2777', fg: '#fff' },  // 更饱和的粉色
+    { bg: '#0891b2', fg: '#fff' },  // 更深的青色
+    { bg: '#eab308', fg: '#000' },  // 更深的黄色
 ];
 
 const PX_PER_TICK = 24;
 const LANE_HEIGHT = 40;
 const RULER_HEIGHT = 30;
 
-export const FrameMeter: React.FC = () => {
+export const TickMeter: React.FC = () => {
     const currentTick = useGameStore(s => s.tick);
     const actions = useGameStore(s => s.scheduledActions);
     const entities = useGameStore(s => s.entities);
@@ -111,10 +111,10 @@ export const FrameMeter: React.FC = () => {
                 return (
                     <div
                         key={`${action.actionId}-${ai}`}
-                        className="absolute top-1 h-4 rounded-sm flex items-center overflow-hidden"
-                        style={{ left: startupWidth > 0 ? left : left, width: Math.max(width, 16), backgroundColor: laneColor.bg, opacity: 0.85 }}
+                        className="absolute top-1 h-5 rounded-md flex items-center overflow-hidden shadow-md hover:shadow-lg transition-all hover:brightness-110 cursor-pointer"
+                        style={{ left: startupWidth > 0 ? left : left, width: Math.max(width, 16), backgroundColor: laneColor.bg, opacity: 0.9 }}
                     >
-                        <span className="text-[8px] px-1.5 truncate leading-none font-bold" style={{ color: laneColor.fg }}>
+                        <span className="text-[9px] px-2 truncate leading-none font-bold" style={{ color: laneColor.fg, textShadow: '0 1px 2px rgba(0,0,0,0.2)' }}>
                             {entityOrder.find(e => e.entityId === entityId)?.name?.slice(0, 10) ?? '?'} {action.actionName}
                         </span>
                     </div>
@@ -125,9 +125,9 @@ export const FrameMeter: React.FC = () => {
                 <React.Fragment key={`${action.actionId}-${ai}`}>
                     {/* STARTUP green */}
                     {startupWidth > 3 && (
-                        <div className="absolute top-1 h-[22px] bg-emerald-700/60 rounded-l-sm border-r border-emerald-500/20 flex items-center justify-center"
+                        <div className="absolute top-1 h-[22px] bg-emerald-600 rounded-l-md border-r border-emerald-400/50 flex items-center justify-center shadow-sm hover:brightness-110 transition-all"
                              style={{ left, width: startupWidth }}>
-                            <span className="text-[8px] font-mono text-emerald-300/80 leading-none">
+                            <span className="text-[9px] font-mono text-emerald-100 leading-none font-bold" style={{ textShadow: '0 1px 2px rgba(0,0,0,0.3)' }}>
                                 {t.startupEnd - t.start}
                             </span>
                         </div>
@@ -137,9 +137,9 @@ export const FrameMeter: React.FC = () => {
                         const activeLeft = tickOffset(pt);
                         return (
                             <div key={`a-${pt}`}
-                                className="absolute top-0 h-full bg-red-600/70 flex items-center justify-center z-10 border-x border-red-500/30"
+                                className="absolute top-0 h-full bg-red-500 flex items-center justify-center z-10 border-x border-red-400/40 shadow-md hover:brightness-110 transition-all"
                                 style={{ left: activeLeft, width: PX_PER_TICK }}>
-                                <span className="text-[7px] font-mono text-red-200 leading-none drop-shadow-sm">
+                                <span className="text-[8px] font-mono text-white leading-none drop-shadow-lg font-bold">
                                     {pulseTicks.length === 1 ? '⚡' : `P${i + 1}`}
                                 </span>
                             </div>
@@ -152,17 +152,17 @@ export const FrameMeter: React.FC = () => {
                         const gapW = tickOffset(pt) - gapStart;
                         if (gapW < 1) return null;
                         return (
-                            <div key={`gap-${i}`} className="absolute top-1 h-[22px] bg-indigo-500/30 flex items-center justify-center"
+                            <div key={`gap-${i}`} className="absolute top-1 h-[22px] bg-indigo-600/60 flex items-center justify-center hover:brightness-110 transition-all rounded-sm"
                                  style={{ left: gapStart, width: Math.max(gapW, 1) }}>
-                                {gapW > 16 && <span className="text-[7px] font-mono text-indigo-300 leading-none">{pt - prev - 1}</span>}
+                                {gapW > 16 && <span className="text-[8px] font-mono text-indigo-200 leading-none font-bold" style={{ textShadow: '0 1px 2px rgba(0,0,0,0.3)' }}>{pt - prev - 1}</span>}
                             </div>
                         );
                     })}
                     {/* RECOVERY blue */}
                     {recoveryWidth > 3 && (
-                        <div className="absolute top-1 h-[22px] bg-blue-700/40 rounded-r-sm border-l border-blue-500/20 flex items-center justify-center"
+                        <div className="absolute top-1 h-[22px] bg-blue-600 rounded-r-md border-l border-blue-400/50 flex items-center justify-center shadow-sm hover:brightness-110 transition-all"
                              style={{ left: recoveryStart, width: recoveryWidth }}>
-                            {recoveryWidth > 14 && <span className="text-[8px] font-mono text-blue-300/70 leading-none">{t.end - lastPulse - 1}</span>}
+                            {recoveryWidth > 14 && <span className="text-[9px] font-mono text-blue-100 leading-none font-bold" style={{ textShadow: '0 1px 2px rgba(0,0,0,0.3)' }}>{t.end - lastPulse - 1}</span>}
                         </div>
                     )}
                 </React.Fragment>
@@ -172,12 +172,12 @@ export const FrameMeter: React.FC = () => {
 
     return (
         <div className="pointer-events-auto flex justify-center" ref={containerRef}>
-            <div className="bg-zinc-950/95 border-b border-x border-zinc-800 rounded-b-lg shadow-lg" style={{ width: '85vw', minWidth: 800 }}> 
+            <div className="bg-zinc-950 border-b border-x border-zinc-700 rounded-b-lg shadow-2xl" style={{ width: '85vw', minWidth: 800 }}>
                 {/* Mode bar */}
-                <div className="flex items-center justify-between px-3 py-1.5 bg-zinc-900/80 border-b border-zinc-800 rounded-b-lg">
-                    <div className="flex items-center gap-2">
-                        <span className="text-xs font-bold text-zinc-300">⏱ Timeline</span>
-                        <span className="text-[10px] text-zinc-500 font-mono">
+                <div className="flex items-center justify-between px-4 py-2 bg-zinc-900 border-b border-zinc-700 rounded-b-lg">
+                    <div className="flex items-center gap-3">
+                        <span className="text-sm font-bold text-zinc-100">⏱ Timeline</span>
+                        <span className="text-[11px] text-zinc-400 font-mono bg-zinc-800/50 px-2 py-1 rounded">
                             T{globalStart}–{globalEnd}
                         </span>
                     </div>
@@ -186,38 +186,38 @@ export const FrameMeter: React.FC = () => {
                             <button
                                 key={m}
                                 onClick={() => setMode(m)}
-                                className={`text-[10px] px-2 py-0.5 rounded-sm transition-colors ${
+                                className={`text-[10px] px-3 py-1 rounded-md transition-all font-medium ${
                                     mode === m
-                                        ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                                        : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800'
+                                        ? 'bg-amber-500 text-white shadow-lg hover:shadow-xl hover:brightness-110'
+                                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 hover:shadow-md'
                                 }`}
                             >
-                                {m === 'lanes' ? '⊟' : m === 'overlay' ? '⊞' : '≡'}
+                                {m === 'lanes' ? '⊟ Lanes' : m === 'overlay' ? '⊞ Overlay' : '≡ Compact'}
                             </button>
                         ))}
                         <button onClick={() => setCollapsed(true)}
-                            className="text-[10px] px-2 py-0.5 rounded-sm text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 ml-1">×</button>
+                            className="text-[10px] px-2 py-1 rounded-md text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 ml-2 transition-all">✕</button>
                     </div>
                 </div>
 
                 {/* Fixed Ruler — always visible */}
-                <div className="relative overflow-hidden border-b border-zinc-800/50" style={{ height: RULER_HEIGHT }}>
+                <div className="relative overflow-hidden border-b border-zinc-700" style={{ height: RULER_HEIGHT, backgroundColor: '#09090b' }}>
                     <div className="absolute inset-0 overflow-x-hidden" ref={scrollRef}>
                         <div className="relative h-full" style={{ width: rulerWidth }}>
                             {rulerTicks.map(({ tick, offset }) => (
                                 <div key={tick} className="absolute top-0 flex flex-col items-center h-full"
                                      style={{ left: offset, transform: 'translateX(-50%)' }}>
-                                    <div className="h-2 w-px bg-zinc-600" />
-                                    <div className="text-[9px] font-mono text-zinc-500 leading-none">
+                                    <div className="h-3 w-px bg-zinc-500" />
+                                    <div className="text-[10px] font-mono text-zinc-300 leading-none font-bold">
                                         {tick}
                                     </div>
                                 </div>
                             ))}
                             {/* Ruler playhead */}
-                            <div className="absolute top-0 h-full w-px bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.6)] z-20"
+                            <div className="absolute top-0 h-full w-0.5 bg-amber-400 shadow-[0_0_10px_rgba(251,191,36,0.8)] z-20"
                                  style={{ left: tickOffset(currentTick) }}>
-                                <div className="absolute -top-0.5 left-1/2 -translate-x-1/2 w-1.5 h-1.5 bg-amber-400 rotate-45" />
-                                <div className="absolute top-3 left-1/2 -translate-x-1/2 text-[10px] font-mono font-bold text-amber-400 whitespace-nowrap">
+                                <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-amber-400 rotate-45 shadow-lg" />
+                                <div className="absolute top-2 left-1/2 -translate-x-1/2 text-[11px] font-mono font-bold text-amber-300 whitespace-nowrap bg-amber-900/60 px-2 py-0.5 rounded shadow-md">
                                     T{currentTick}
                                 </div>
                             </div>
@@ -227,12 +227,12 @@ export const FrameMeter: React.FC = () => {
 
                 {/* Content area */}
                 {mode === 'compact' ? (
-                    <div className="h-10 relative overflow-hidden mx-2">
+                    <div className="h-12 relative overflow-hidden mx-2 py-1">
                         <div className="absolute inset-0 overflow-x-auto" onScroll={e => {
                             if (scrollRef.current) scrollRef.current.scrollLeft = (e.target as HTMLElement).scrollLeft;
                         }}>
                             <div className="relative h-full" style={{ width: rulerWidth }}>
-                                <div className="absolute inset-x-0 top-1" style={{ height: 20 }}>
+                                <div className="absolute inset-x-0 top-1" style={{ height: 32 }}>
                                     {actions.map((action, i) => {
                                         const ent = entityOrder.find(e => e.entityId === action.entityId);
                                         const t = action.timeline;
@@ -240,9 +240,9 @@ export const FrameMeter: React.FC = () => {
                                         const width = tickOffset(t.end) - left;
                                         return (
                                             <div key={`${action.actionId}-${i}`}
-                                                className="absolute top-0 h-4 rounded-sm flex items-center overflow-hidden px-1"
-                                                style={{ left, width: Math.max(width, 12), backgroundColor: ent?.color.bg ?? '#666', opacity: 0.7 }}>
-                                                <span className="text-[7px] font-bold truncate" style={{ color: ent?.color.fg ?? '#fff' }}>
+                                                className="absolute top-0 h-6 rounded-md flex items-center overflow-hidden px-2 shadow-md hover:shadow-lg hover:brightness-110 transition-all cursor-pointer"
+                                                style={{ left, width: Math.max(width, 12), backgroundColor: ent?.color.bg ?? '#666', opacity: 0.85 }}>
+                                                <span className="text-[8px] font-bold truncate" style={{ color: ent?.color.fg ?? '#fff', textShadow: '0 1px 2px rgba(0,0,0,0.2)' }}>
                                                     {ent?.name?.slice(0, 8)} {action.actionName}
                                                 </span>
                                             </div>
@@ -253,7 +253,7 @@ export const FrameMeter: React.FC = () => {
                         </div>
                     </div>
                 ) : mode === 'overlay' ? (
-                    <div className="h-12 relative overflow-hidden mx-2">
+                    <div className="h-16 relative overflow-hidden mx-2 py-1">
                         <div className="absolute inset-0 overflow-x-auto" onScroll={e => {
                             if (scrollRef.current) scrollRef.current.scrollLeft = (e.target as HTMLElement).scrollLeft;
                         }}>
@@ -265,18 +265,18 @@ export const FrameMeter: React.FC = () => {
                                     const width = tickOffset(t.end) - left;
                                     return (
                                         <div key={`${action.actionId}-${i}`}
-                                            className="absolute top-1 h-5 rounded-sm flex items-center overflow-hidden px-1.5"
-                                            style={{ left, width: Math.max(width, 12), backgroundColor: ent?.color.bg ?? '#666', opacity: 0.35 + 0.15 * (i % 3) }}>
-                                            <span className="text-[7px] font-bold truncate" style={{ color: ent?.color.fg ?? '#fff' }}>
+                                            className="absolute top-1 h-6 rounded-md flex items-center overflow-hidden px-1.5 shadow-md hover:shadow-lg hover:brightness-110 transition-all cursor-pointer"
+                                            style={{ left, width: Math.max(width, 12), backgroundColor: ent?.color.bg ?? '#666', opacity: 0.65 + 0.2 * (i % 3) }}>
+                                            <span className="text-[8px] font-bold truncate" style={{ color: ent?.color.fg ?? '#fff', textShadow: '0 1px 2px rgba(0,0,0,0.2)' }}>
                                                 {ent?.name?.slice(0, 8)} {action.actionName}
                                             </span>
                                         </div>
                                     );
                                 })}
-                                <div className="absolute bottom-0 left-0 flex gap-1.5 px-1">
+                                <div className="absolute bottom-1 left-0 flex gap-2 px-2">
                                     {entityOrder.map(ent => (
-                                        <div key={ent.entityId} className="flex items-center gap-0.5 text-[8px] text-zinc-500">
-                                            <div className="w-1.5 h-1.5 rounded-sm" style={{ backgroundColor: ent.color.bg }} />
+                                        <div key={ent.entityId} className="flex items-center gap-1 text-[9px] text-zinc-300 font-medium">
+                                            <div className="w-2 h-2 rounded-sm shadow-sm" style={{ backgroundColor: ent.color.bg }} />
                                             {ent.name.slice(0, 8)}
                                         </div>
                                     ))}
@@ -286,7 +286,7 @@ export const FrameMeter: React.FC = () => {
                     </div>
                 ) : (
                     /* Lanes */
-                    <div style={{ height: entityIds.length * LANE_HEIGHT, minHeight: 60, maxHeight: 200 }}
+                    <div style={{ height: entityIds.length * LANE_HEIGHT, minHeight: 80, maxHeight: 240 }}
                          className="relative overflow-hidden overflow-y-auto mx-2">
                         <div className="absolute inset-0 overflow-x-auto" onScroll={e => {
                             if (scrollRef.current) scrollRef.current.scrollLeft = (e.target as HTMLElement).scrollLeft;
@@ -294,24 +294,24 @@ export const FrameMeter: React.FC = () => {
                             <div className="relative" style={{ width: rulerWidth, height: entityIds.length * LANE_HEIGHT }}>
                                 {entityOrder.map((ent, li) => (
                                     <div key={ent.entityId}
-                                        className="absolute left-0 right-0 border-b border-zinc-800/40"
+                                        className="absolute left-0 right-0 border-b border-zinc-700"
                                         style={{
                                             top: li * LANE_HEIGHT, height: LANE_HEIGHT,
-                                            backgroundColor: li % 2 === 0 ? 'transparent' : 'rgba(15,15,20,0.4)'
+                                            backgroundColor: li % 2 === 0 ? 'transparent' : 'rgba(39,39,42,0.5)'
                                         }}>
-                                        <div className="absolute left-0 top-0 bottom-0 w-14 flex items-center justify-end pr-1.5 text-[9px] font-bold z-10"
-                                             style={{ color: ent.color.bg, backgroundColor: 'rgba(9,9,11,0.9)' }}>
-                                            {ent.name.slice(0, 7)}
+                                        <div className="absolute left-0 top-0 bottom-0 w-16 flex items-center justify-end pr-2 text-[10px] font-bold z-10 shadow-md"
+                                             style={{ color: ent.color.bg, backgroundColor: 'rgba(9,9,11,0.95)', borderRight: `2px solid ${ent.color.bg}` }}>
+                                            {ent.name.slice(0, 8)}
                                         </div>
-                                        <div className="absolute left-14 right-0 h-full">
+                                        <div className="absolute left-16 right-0 h-full">
                                             {renderActionSegments(ent.entityId, ent.color, true)}
                                         </div>
                                     </div>
                                 ))}
                                 {/* Playhead */}
-                                <div className="absolute top-0 w-px bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.6)] z-20 pointer-events-none"
+                                <div className="absolute top-0 w-0.5 bg-amber-400 shadow-[0_0_10px_rgba(251,191,36,0.8)] z-20 pointer-events-none"
                                      style={{ left: tickOffset(currentTick), height: entityIds.length * LANE_HEIGHT }}>
-                                    <div className="absolute -top-0.5 left-1/2 -translate-x-1/2 w-1.5 h-1.5 bg-amber-400 rotate-45" />
+                                    <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-amber-400 rotate-45 shadow-lg" />
                                 </div>
                             </div>
                         </div>

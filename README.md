@@ -69,7 +69,7 @@ ElysianVTT/
 │           ├── main.tsx     # React 入口
 │           └── App.tsx      # 根组件
 ├── test/                    # 独立集成测试
-│   └── core-test.ts         # 战斗引擎集成测试
+│   └── core.test.ts         # 战斗引擎集成测试
 ├── docker-compose.yml       # 容器编排
 ├── pnpm-workspace.yaml      # Monorepo 工作区定义
 ├── verify-env.js            # 环境健康检查脚本
@@ -124,7 +124,7 @@ pnpm --filter @hard-vtt/frontend dev
 
 ```bash
 cd test
-npx tsx core-test.ts
+npx tsx core.test.ts
 ```
 
 ### 生产构建

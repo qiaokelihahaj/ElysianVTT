@@ -31,8 +31,8 @@ npx tsx *.test.ts
 ### 3. 运行特定测试
 ```bash
 # 后端测试
-npx tsx core-test.ts
-npx tsx unit-test.ts
+npx tsx core.test.ts
+npx tsx backend-utils.test.ts
 
 # 前端测试
 npx tsx frontend-utils.test.ts
@@ -48,8 +48,8 @@ npx tsx frontend-store.test.ts
 
 | 文件 | 目的 | 覆盖范围 | 用例数 |
 |------|------|--------|-------|
-| **`core-test.ts`** | 引擎核心逻辑 | PriorityQueue、RuleEvaluator、CombatEngine、DiceRolling | ~30+ |
-| **`unit-test.ts`** | 工具函数 | SafeJsonParser、IdGenerator | ~10+ |
+| **`core.test.ts`** | 引擎核心逻辑 | PriorityQueue、RuleEvaluator、CombatEngine、DiceRolling | ~30+ |
+| **`backend-utils.test.ts`** | 工具函数 | PriorityQueue、SafeJsonParser、IdGenerator | ~10+ |
 
 ### 前端测试
 
@@ -121,11 +121,11 @@ npx tsx frontend-store.test.ts
 npx tsx *.test.ts
 
 # 运行单个测试文件
-npx tsx core-test.ts
+npx tsx core.test.ts
 npx tsx frontend-utils.test.ts
 
 # 运行多个测试文件
-npx tsx core-test.ts unit-test.ts frontend-utils.test.ts
+npx tsx core.test.ts backend-utils.test.ts frontend-utils.test.ts
 ```
 
 ### 安装依赖（如需）
@@ -144,10 +144,10 @@ pnpm install
 {
   "scripts": {
     "test": "tsx *.test.ts",
-    "test:backend": "tsx core-test.ts unit-test.ts",
+    "test:backend": "tsx core.test.ts backend-utils.test.ts",
     "test:frontend": "tsx frontend-*.test.ts",
     "test:watch": "tsx --watch *.test.ts",
-    "test:core": "tsx core-test.ts",
+    "test:core": "tsx core.test.ts",
     "test:utils": "tsx frontend-utils.test.ts",
     "test:intent": "tsx frontend-intent.test.ts",
     "test:store": "tsx frontend-store.test.ts"
@@ -275,7 +275,7 @@ pnpm install
 
 # 然后在 test 目录运行
 cd test
-npx tsx core-test.ts
+npx tsx core.test.ts
 ```
 
 ### 问题 2：TypeScript 编译错误
@@ -308,7 +308,7 @@ console.log('预期值：', expectedValue);
 console.log('完整对象：', JSON.stringify(obj, null, 2));
 
 // 运行单个测试
-npx tsx core-test.ts 2>&1 | head -50
+npx tsx core.test.ts 2>&1 | head -50
 ```
 
 ### 问题 4：`process.exit(1)` 导致半途中断
@@ -318,7 +318,7 @@ npx tsx core-test.ts 2>&1 | head -50
 **运行单个文件：**
 ```bash
 # 逐个测试
-npx tsx core-test.ts
+npx tsx core.test.ts
 npx tsx frontend-utils.test.ts
 # ...
 ```
@@ -443,8 +443,8 @@ A: 可以注释掉 `test()` 调用，但不建议在提交代码时跳过。
 
 | 测试套件 | 状态 | 通过率 |
 |---------|------|-------|
-| `core-test.ts` | ✅ | 100% |
-| `unit-test.ts` | ✅ | 100% |
+| `core.test.ts` | ✅ | 100% |
+| `backend-utils.test.ts` | ✅ | 100% |
 | `frontend-utils.test.ts` | ✅ | 14/14 |
 | `frontend-intent.test.ts` | ✅ | 29/29 |
 | `frontend-store.test.ts` | ✅ | 25/25 |

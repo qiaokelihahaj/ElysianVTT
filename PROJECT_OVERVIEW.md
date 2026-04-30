@@ -173,7 +173,7 @@ index.ts  →  Dictionary.loadAllFromDb()      加载动作模板进内存
 | 模块 | 文件 | 状态 | 职责 |
 |------|------|------|------|
 | ID 生成器 | `IdGenerator.ts` | ✅ | UUID v4 生成 |
-| 骰子内核 | `dice/DiceProcessor.ts`<br>`dice/DiceGenerator.ts` | ✅ | 独立的高效 NdM 骰池流水线，支持暴击标签、爆炸骰、重投策略及玩家介入改值。引入规则预编译(AST)机制，将数千颗骰子的运算降至 O(1) 原生比较复杂度 |
+| 骰子内核 | `dice/DiceProcessor.ts`<br>`dice/DiceGenerator.ts` | ✅ | 独立的高效 NdM 骰池流水线，支持暴击标签、爆炸骰、重投策略及玩家介入改值。当前实现为规则条件预处理与逐骰结算，没有 AST 级编译，也不具备 O(1) 复杂度 |
 | 日志系统 | `Logger.ts` | ✅ | 基于 shared 协议实现终端高亮、上下文透传的结构化日志 |
 | 向量运算 | `VectorMath.ts` | ✅ | 三维向量距离、归一化、方向、步进、加减缩放 |
 | JSON 解析 | `SafeJsonParser.ts` | ✅ | 安全 JSON 解析，防止脏数据崩溃 |
@@ -701,7 +701,7 @@ ClashPool.resolve():
 **掷骰系统：**
 - 正则 `/^(\d+)d(\d+)$/` 匹配 `NdM` 格式，如 `2d6` → N 次随机取面求和
 - `DiceGenerator` 独立生成原始骰子 `RawDie[]`
-- `DiceProcessor` 预编译规则为 AST（O(1) 比较函数），支持：
+- `DiceProcessor` 将规则条件预处理为简单比较函数，支持：
   - **EXPLODE** 爆炸骰（掷出最大面值追加一颗骰子，可链式触发）
   - **REROLL** 重投（满足条件时重新掷骰）
   - **ADD_TAG** 暴击标签（如 `faceValue == sides → CRIT`）

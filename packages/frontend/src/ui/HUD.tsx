@@ -1,7 +1,7 @@
 import React from 'react';
 import { useGameStore } from '../store/gameStore';
 import { IntentDispatcher } from '../network/IntentDispatcher';
-import { FrameMeter } from './components/FrameMeter';
+import { TickMeter } from './components/TickMeter';
 import { EntityList } from './components/EntityList';
 
 export const HUD: React.FC = () => {
@@ -23,8 +23,8 @@ export const HUD: React.FC = () => {
 
     return (
         <div className="absolute inset-0 pointer-events-none flex flex-col">
-            {/* Frame Timeline — spans full top */}
-            <FrameMeter />
+            {/* Tick Timeline - spans full top */}
+            <TickMeter />
 
             {/* Main HUD content */}
             <div className="flex-1 flex flex-col justify-between p-3">
