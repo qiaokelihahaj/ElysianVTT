@@ -26,15 +26,14 @@
 
 ### 阶段 2: 问题验证 ✅ 已完成
 
-#### 空文件验证 (5/5) ✅
+#### 空文件验证 (4/4) ✅
 
-- [x] `packages/backend/src/campaigns/SettlementService.ts` - 文件为空 (CR-001)
 - [x] `packages/backend/src/network/IntentRouter.ts` - 文件为空 (HP-001)
 - [x] `packages/backend/src/network/StateBroadcaster.ts` - 文件为空 (HP-002)
 - [x] `packages/backend/src/db/Repository.ts` - 文件为空 (HP-003)
 - [x] `packages/backend/src/network/VisibilityFilter.ts` - 文件为空 (CR-009)
 
-#### 代码缺陷验证 (7/7) ✅
+#### 代码缺陷验证 (4/4) ✅
 
 - [x] **SocketServer 无认证** (CR-002)
   - 文件: [packages/backend/src/network/SocketServer.ts:13-24](packages/backend/src/network/SocketServer.ts#L13-L24)
@@ -51,32 +50,17 @@
   - 症状: 客户端可伪造任意actorId
   - 状态: ✅ 代码确认
 
-- [x] **ClashPool 过严的事件过滤** (CR-010)
-  - 文件: [packages/backend/src/core/engine/ClashPool.ts:95](packages/backend/src/core/engine/ClashPool.ts#L95)
-  - 症状: `actor.currentActionContext?.actionId !== evt.eventId` 检查过严
-  - 状态: ✅ 代码确认
-
 - [x] **CombatEngine processQueue()不完整** (CR-005)
   - 文件: [packages/backend/src/campaigns/engines/CombatEngine.ts:280-305](packages/backend/src/campaigns/engines/CombatEngine.ts#L280-L305)
   - 症状: 缺少 collectSameTickEvents(), resolveSingleEvent(), broadcastMutations()
   - 状态: ✅ 代码确认
-
-- [x] **CombatEngine 缺少战斗结束逻辑** (CR-006)
-  - 文件: [packages/backend/src/campaigns/engines/CombatEngine.ts](packages/backend/src/campaigns/engines/CombatEngine.ts)
-  - 症状: 无COMBAT_END触发逻辑
-  - 状态: ✅ 代码审查确认
 
 - [x] **CombatEngine cancelAction O(n)性能** (CR-007)
   - 文件: [packages/backend/src/campaigns/engines/CombatEngine.ts:253-270](packages/backend/src/campaigns/engines/CombatEngine.ts#L253-L270)
   - 症状: 遍历整个堆数组 `for (const event of (this.eventQueue as any).heap)`
   - 状态: ✅ 代码确认
 
-- [x] **CombatEngine INTERACT处理缺失** (CR-011)
-  - 文件: [packages/backend/src/campaigns/engines/CombatEngine.ts:59-73](packages/backend/src/campaigns/engines/CombatEngine.ts#L59-L73)
-  - 症状: receiveIntent()无INTERACT分支
-  - 状态: ✅ 代码确认
-
-**验证结论**: ✅ **全部14个关键问题已验证存在**
+**验证结论**: ✅ **全部8个关键问题已验证存在**
 
 ---
 
@@ -124,7 +108,6 @@
 |-----|------|--------|--------|------|
 | CR-002/003/004 | SocketServer 安全修复 | @后端Lead | 18h | ⬜️ 未开始 |
 | CR-005 | processQueue()完整实现 | @后端P1 | 8h | ⬜️ 未开始 |
-| CR-010 | ClashPool过滤修复 | @后端P1 | 1h | ⬜️ 未开始 |
 
 **验收标准**:
 - [ ] SocketServer 有JWT认证
@@ -137,19 +120,18 @@
 **任务**:
 | ID | 问题 | 责任人 | 工作量 | 状态 |
 |-----|------|--------|--------|------|
-| CR-006 | 战斗结束逻辑 | @后端Lead | 3h | ⬜️ 未开始 |
-| CR-001 | SettlementService框架 | @后端P2 | 12h | ⬜️ 未开始 |
+| CR-007 | cancelAction 性能优化 | @后端Lead | 5h | ⬜️ 未开始 |
+| CR-008 | 并发控制基础 | @后端P2 | 4h | ⬜️ 未开始 |
 
 **验收标准**:
-- [ ] COMBAT_END事件正确触发
-- [ ] SettlementService 框架完成
+- [ ] cancelAction 优化后性能稳定
+- [ ] 并发控制基础逻辑可工作
 - [ ] 集成测试覆盖基础流程
 
 #### 周四-周五: P1 问题继续和集成测试
 
 **任务**:
 - [ ] CR-009: VisibilityFilter 基础实现 (8h)
-- [ ] CR-011: INTERACT处理 (2h)
 - [ ] CR-008: 并发控制基础 (4h)
 - [ ] 完整战斗流程集成测试
 
@@ -242,33 +224,6 @@
 
 ---
 
-#### CR-010: ClashPool decorateEvents() 修复 (1h)
-
-**改进**:
-```typescript
-// 删除这一行检查:
-if (!actor || actor.currentActionContext?.actionId !== evt.eventId) continue;
-
-// 改为:
-if (!actor) continue;
-```
-
-**测试**:
-- [ ] 单元测试：同时两个施法者冲突
-- [ ] 集成测试：三人冲突结算
-
----
-
-#### CR-006: 战斗结束逻辑 (3h)
-
-**实现**:
-- [ ] 添加 checkAndEndCombat() 方法 (1h)
-- [ ] 在processQueue()中定期调用 (0.5h)
-- [ ] 触发COMBAT_END事件 (0.5h)
-- [ ] 调用SettlementService (1h)
-
----
-
 ### 测试计划
 
 #### 单元测试要求
@@ -328,10 +283,10 @@ if (!actor) continue;
 
 ### 周目标
 
-**第1周目标**: 所有P0问题完成 (CR-001 至 CR-011)
+**第1周目标**: 所有剩余P0问题完成
 
 ```
-工作量: 61h
+工作量: 42h
 目标: 本周完成
 团队: 3人
 周工时: 3人 × 40h = 120h

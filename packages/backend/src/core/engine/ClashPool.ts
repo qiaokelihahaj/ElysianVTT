@@ -91,7 +91,7 @@ export class ClashPool {
 
         for (const evt of events) {
             const actor = entities.get(evt.actorId);
-            if (!actor || actor.currentActionContext?.actionId !== evt.eventId) continue;
+            if (!actor) continue;
 
             const template = Dictionary.getAction(evt.actionTemplateId);
             if (!template) continue;

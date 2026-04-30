@@ -1,6 +1,7 @@
 // packages/backend/src/campaigns/CampaignManager.ts
 import { Server } from 'socket.io';
 import { CombatEngine } from './engines/CombatEngine.js';
+import { SettlementService, type CombatEndPayload } from './SettlementService.js';
 import { prisma } from '../db/prisma.js';
 import { Entity } from '@hard-vtt/shared';
 import { safeParse } from '../utils/SafeJsonParser.js';
@@ -12,6 +13,7 @@ export class CampaignManager {
     // 内存中保存所有正在运行的场景/战斗引擎 (Key: sceneId)
     private engines = new Map<string, Promise<CombatEngine>>();
     private io: Server;
+    private settlementService = new SettlementService();
 
     constructor(io: Server) {
         this.io = io;
@@ -83,6 +85,16 @@ export class CampaignManager {
         // 接收引擎打出的动作调度事件，转发给前端渲染时间轴
         newEngine.on('ACTION_SCHEDULED', (payload) => {
             this.io.to(sceneId).emit('ACTION_SCHEDULED', payload);
+        });
+
+        newEngine.on('COMBAT_END', (payload: CombatEndPayload) => {
+            void this.settlementService.settleCombat(payload)
+                .then(() => {
+                    this.io.to(sceneId).emit('COMBAT_END', payload);
+                })
+                .catch((error) => {
+                    logger.error(`Failed to settle combat for scene ${sceneId}`, error, { sceneId });
+                });
         });
 
         return newEngine;

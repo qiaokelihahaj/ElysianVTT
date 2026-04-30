@@ -2,7 +2,7 @@
 
 **生成日期**: 2026年4月30日  
 **来源报告**: CODE_REVIEW.md、CODE_REVIEW_COMPREHENSIVE.md、CODE_REVIEW_ISSUES_DETAILED.md、CODE_REVIEW_QUICK_REFERENCE.md、CODE_REVIEW_AGENT1_REPORT.md、CODE_REVIEW_AGENT2_REPORT.md  
-**总问题数**: 58个去重后的独特问题
+**总问题数**: 53个（已移除已修复项）
 
 ---
 
@@ -10,27 +10,17 @@
 
 | 优先级 | 问题数 | 总工作量 | 状态 |
 |--------|--------|---------|------|
-| 🔴 Critical | 11 | 25h | 本周必须完成 |
-| 🟡 High Priority | 18 | 32h | 第一周处理 |
+| 🔴 Critical | 7 | 34h | 本周必须完成 |
+| 🟡 High Priority | 17 | 50h | 第一周处理 |
 | 🟢 Medium Priority | 19 | 28h | 第二周处理 |
 | 🟣 Low Priority | 10 | 12h | 可选优化 |
-| **总计** | **58** | **97h** | - |
+| **总计** | **53** | **124h** | - |
 
 ---
 
 # 第一类：关键问题（Critical Issues）🔴
 
 必须立即解决，否则MVP Phase 1无法完成或存在严重安全风险
-
-## CR-001: SettlementService 文件为空
-- **模块**: 业务逻辑 / 战斗结算
-- **文件**: [packages/backend/src/campaigns/SettlementService.ts](packages/backend/src/campaigns/SettlementService.ts)
-- **优先级**: 🔴 CRITICAL
-- **问题描述**: MVP Phase 1关键功能完全缺失，战斗无法结算。需要实现战斗结果落库、XP分配、战利品、玩家数据更新等完整流程
-- **影响范围**: 整个战斗结算链路
-- **工作量**: 12h
-- **在报告中出现**: CODE_REVIEW_COMPREHENSIVE.md, CODE_REVIEW_AGENT1_REPORT.md, CODE_REVIEW_AGENT2_REPORT.md
-- **是否为空文件**: 是
 
 ## CR-002: Socket 无玩家认证机制
 - **模块**: 网络安全
@@ -74,16 +64,6 @@
 - **在报告中出现**: CODE_REVIEW.md, CODE_REVIEW_COMPREHENSIVE.md, CODE_REVIEW_ISSUES_DETAILED.md, CODE_REVIEW_AGENT1_REPORT.md
 - **相关问题**: 依赖ClashPool的resolveClash()实现
 
-## CR-006: CombatEngine 缺少战斗结束逻辑
-- **模块**: 后端核心引擎
-- **文件**: [packages/backend/src/campaigns/engines/CombatEngine.ts](packages/backend/src/campaigns/engines/CombatEngine.ts)
-- **优先级**: 🔴 CRITICAL
-- **问题描述**: 无法判断战斗何时结束（剩余存活单位数量），无法触发COMBAT_END事件并调用SettlementService
-- **影响范围**: 战斗流程无法自然结束
-- **工作量**: 3h
-- **在报告中出现**: CODE_REVIEW.md, CODE_REVIEW_ISSUES_DETAILED.md
-- **解决方案**: 添加checkAndEndCombat()方法
-
 ## CR-007: CombatEngine 动作取消性能问题 O(n)
 - **模块**: 后端核心引擎
 - **文件**: [packages/backend/src/campaigns/engines/CombatEngine.ts](packages/backend/src/campaigns/engines/CombatEngine.ts)
@@ -114,32 +94,6 @@
 - **在报告中出现**: CODE_REVIEW.md, CODE_REVIEW_COMPREHENSIVE.md, CODE_REVIEW_AGENT1_REPORT.md, CODE_REVIEW_AGENT2_REPORT.md
 - **是否为空文件**: 是
 - **需要实现**: isInLineOfSight()、filterMutation()、Bresenham视线算法
-
-## CR-010: ClashPool decorateEvents() 事件过滤过严
-- **模块**: 后端核心引擎 / 冲突系统
-- **文件**: [packages/backend/src/core/engine/ClashPool.ts](packages/backend/src/core/engine/ClashPool.ts)
-- **优先级**: 🔴 CRITICAL
-- **问题描述**: 
-  ```typescript
-  if (!actor || actor.currentActionContext?.actionId !== evt.eventId) continue;
-  ```
-  这个检查会错误地跳过某些合法的冲突事件，导致同时施法的冲突漏判
-- **影响范围**: 战斗平衡，冲突结算不准确
-- **工作量**: 1h
-- **在报告中出现**: CODE_REVIEW.md, CODE_REVIEW_COMPREHENSIVE.md, CODE_REVIEW_ISSUES_DETAILED.md
-- **修复**: 移除currentActionContext检查，仅保留actor存在性检查
-
-## CR-011: INTERACT意图处理缺失
-- **模块**: 后端核心引擎
-- **文件**: [packages/backend/src/campaigns/engines/CombatEngine.ts](packages/backend/src/campaigns/engines/CombatEngine.ts)
-- **优先级**: 🔴 CRITICAL
-- **问题描述**: 共享协议和前端都定义了INTERACT意图类型，HUD有交互按钮，但后端CombatEngine的receiveIntent()只处理MOVE和CAST_ACTION，INTERACT会被静默忽略
-- **影响范围**: 交互系统完全不工作
-- **工作量**: 2h
-- **在报告中出现**: CODE_REVIEW_AGENT2_REPORT.md
-- **详细位置**: 
-  - [CombatEngine.ts:65](packages/backend/src/campaigns/engines/CombatEngine.ts#L65)
-  - [CombatEngine.ts:70](packages/backend/src/campaigns/engines/CombatEngine.ts#L70)
 
 ---
 
@@ -185,15 +139,6 @@
 - **影响范围**: 内存泄漏、性能下降
 - **工作量**: 3h
 - **在报告中出现**: CODE_REVIEW.md, CODE_REVIEW_COMPREHENSIVE.md, CODE_REVIEW_AGENT1_REPORT.md, CODE_REVIEW_AGENT2_REPORT.md
-
-## HP-005: CampaignManager 缺少SettlementService集成
-- **模块**: 业务逻辑
-- **文件**: [packages/backend/src/campaigns/CampaignManager.ts](packages/backend/src/campaigns/CampaignManager.ts)
-- **优先级**: 🟡 HIGH
-- **问题描述**: 战斗结束时应该调用SettlementService进行结算，当前没有该集成
-- **影响范围**: 战斗结果无法落库
-- **工作量**: 1h
-- **在报告中出现**: CODE_REVIEW.md, CODE_REVIEW_COMPREHENSIVE.md
 
 ## HP-006: Socket disconnect 处理不完整
 - **模块**: 网络
@@ -586,8 +531,7 @@
 ### 第1周（Critical Issues - 52h）
 **优先顺序**:
 1. CR-002/003/004: SocketServer安全修复 (12h)
-2. CR-001: SettlementService实现 (12h)
-3. CR-005/006/007/008: CombatEngine修复 (20h)
+2. CR-005/007/008: CombatEngine修复 (17h)
 4. CR-009: VisibilityFilter实现 (8h)
 
 ### 第2周（High Priority - 51h）
@@ -608,11 +552,9 @@
 
 使用此清单验证所有修复：
 
-- [ ] CR-001 SettlementService 完全实现（战斗结算、XP分配、战利品、日志记录）
 - [ ] CR-002/003/004 SocketServer 实现完整的认证、权限检查、CORS限制
-- [ ] CR-005/006/007/008 CombatEngine processQueue完整实现、战斗结束检查、取消优化、并发控制
+- [ ] CR-005/007/008 CombatEngine processQueue完整实现、取消优化、并发控制
 - [ ] CR-009 VisibilityFilter 实现FoW和LoS机制
-- [ ] CR-010/011 ClashPool 和 INTERACT 修复
 - [ ] HP-001-018 所有高优先级问题修复
 - [ ] 所有关键代码移除 `as any` 类型转换
 - [ ] 添加关键表和索引到数据库

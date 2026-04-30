@@ -27,6 +27,7 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
     private eventQueue = new PriorityQueue();
     private tickLoop = new TickLoop(this.eventQueue);
     private entities = new Map<EntityId, Entity>();
+    private combatEnded = false;
     
     private pendingMutations: StateMutationPayload = { tick: 0, mutations: [] };
     
@@ -76,6 +77,11 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
 
         if (intent.intentType === 'CAST_ACTION' && intent.payload.actionTemplateId) {
             this.handleActionIntent(actor, intent);
+            return;
+        }
+
+        if (intent.intentType === 'INTERACT') {
+            this.handleInteractIntent(actor, intent);
             return;
         }
     }
@@ -200,6 +206,36 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         this.processQueue();
     }
 
+    private handleInteractIntent(actor: Entity, intent: ClientIntent): void {
+        const targetId = intent.payload.targetIds?.[0];
+        const target = targetId ? this.entities.get(targetId) : undefined;
+
+        if (!target) {
+            this.logger.warn(`交互目标不存在或未提供`, { actorId: actor.id, targetId }, this.logCtx());
+            return;
+        }
+
+        this.logger.game(
+            `🔎 [Interact] Tick ${this.currentTick}: ${actor.id} ↔ ${target.id}`,
+            { actorId: actor.id, targetId: target.id },
+            LogVisibility.PLAYER,
+            this.logCtx()
+        );
+
+        this.emit('VISUAL_FX', {
+            tick: this.currentTick,
+            events: [{
+                eventId: generateId(),
+                eventType: 'UI_FLOATING_TEXT',
+                sourceId: actor.id,
+                targetId: target.id,
+                fxTemplateId: 'interact',
+                durationMs: 800,
+                text: 'INTERACT'
+            }]
+        });
+    }
+
     // ============================================================
     //  取消 / 打断
     // ============================================================
@@ -289,7 +325,7 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
     // ============================================================
 
     private processQueue(): void {
-        while (!this.tickLoop.isEmpty()) {
+        while (!this.tickLoop.isEmpty() && !this.combatEnded) {
             // 广播上一轮的 accumulation
             if (this.pendingMutations.mutations.length > 0) {
                 this.broadcastMutations();
@@ -316,6 +352,10 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
                 for (const e of events) {
                     this.resolveSingleEvent(e);
                 }
+            }
+
+            if (this.checkAndEndCombat()) {
+                break;
             }
         }
 
@@ -375,6 +415,8 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             if (!actor?.currentActionContext) continue;
             this.pushNextPhase(actor, ce);
         }
+
+        this.checkAndEndCombat();
     }
 
     private resolveSingleEvent(event: TickEvent): void {
@@ -383,6 +425,8 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         } else if ((event as MovementStepEvent).eventType === 'MOVEMENT_STEP') {
             this.resolveMovementStep(event as MovementStepEvent);
         }
+
+        this.checkAndEndCombat();
     }
 
     // ============================================================
@@ -603,5 +647,28 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             this.emit('STATE_MUTATED', this.pendingMutations);
             this.pendingMutations = { tick: this.currentTick, mutations: [] };
         }
+    }
+
+    private checkAndEndCombat(): boolean {
+        if (this.combatEnded) return true;
+
+        const actors = Array.from(this.entities.values()).filter(entity => entity.type === 'ACTOR');
+        if (actors.length === 0) return false;
+
+        const livingActors = actors.filter(entity => (entity.resources.current['hp'] ?? 0) > 0);
+        if (livingActors.length > 1) {
+            return false;
+        }
+
+        this.combatEnded = true;
+        this.emit('COMBAT_END', {
+            sceneId: this.engineId,
+            tick: this.currentTick,
+            survivors: livingActors.map(entity => entity.id),
+            casualties: actors.filter(entity => (entity.resources.current['hp'] ?? 0) <= 0).map(entity => entity.id),
+            entities: this.getAllEntities()
+        });
+
+        return true;
     }
 }

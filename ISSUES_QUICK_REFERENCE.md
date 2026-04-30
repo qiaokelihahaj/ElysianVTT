@@ -1,11 +1,11 @@
 # ElysianVTT 问题清单 - 快速参考指南
 
 **生成日期**: 2026年4月30日  
-**工作量总计**: 158小时 | **问题总数**: 58个（去重统一）
+**工作量总计**: 139小时 | **问题总数**: 53个（已移除已修复项）
 
 ---
 
-## 🔴 Critical Issues 优先级排序 (52h 本周必须完成)
+## 🔴 Critical Issues 优先级排序 (34h 本周必须完成)
 
 ### 1️⃣ 最紧急: SocketServer 安全修复 (17h)
 ```
@@ -22,37 +22,18 @@ CR-004: Socket 无权限检查 ............... 3h  玩家可控制他人角色
 
 ---
 
-### 2️⃣ 第二紧急: SettlementService 实现 (12h)
-```
-CR-001: SettlementService 文件为空 ..... 12h 🔴 MVP Phase 1必需功能
-```
-**文件**: `packages/backend/src/campaigns/SettlementService.ts`  
-**影响**: MVP无法完成战斗结算  
-**必需的实现**:
-- 战斗结果落库
-- 角色数据更新(HP、资源等)
-- XP分配
-- 战利品分发
-- 战斗日志记录
-
----
-
-### 3️⃣ 第三紧急: CombatEngine 核心修复 (23h)
+### 2️⃣ 第二紧急: CombatEngine 核心修复 (17h)
 ```
 CR-005: CombatEngine.processQueue() 不完整 ... 8h 🔴 引擎无法运行
-CR-006: CombatEngine 缺少战斗结束逻辑 ...... 3h  无法调用SettlementService
 CR-007: CombatEngine 动作取消 O(n) ........ 5h  性能严重下降
 CR-008: CombatEngine 缺少并发控制 ........ 4h  多玩家竞态条件
-CR-011: INTERACT意图处理缺失 ............. 2h  交互系统不工作
 ```
 **文件**: `packages/backend/src/campaigns/engines/CombatEngine.ts`  
 **影响**: 整个战斗流程无法运行  
 **关键实现**:
 - [ ] 完整的processQueue()事件循环
-- [ ] 战斗结束检测
 - [ ] 动作取消优化(eventIdToHeapIndex映射)
 - [ ] 并发控制和同步
-- [ ] INTERACT处理分支
 
 ---
 
@@ -70,32 +51,14 @@ CR-009: VisibilityFilter 文件为空 ....... 8h 🔴 FoW/隐身系统必需
 
 ---
 
-### 5️⃣ ClashPool 修复 (1h)
-```
-CR-010: ClashPool decorateEvents() 过滤过严 . 1h 🔴 冲突漏判
-```
-**文件**: `packages/backend/src/core/engine/ClashPool.ts`  
-**影响**: 同时施法冲突无法结算  
-**快速修复**:
-```typescript
-// 移除这行：
-if (!actor || actor.currentActionContext?.actionId !== evt.eventId) continue;
-
-// 改为：
-if (!actor) continue;
-```
-
----
-
 ## 🟡 High Priority 第一周任务 (51h)
 
 ### 优先顺序
 1. **HP-001/002/003**: 空文件填充 (10h)
    - IntentRouter, StateBroadcaster, Repository
 
-2. **HP-004/005**: CampaignManager 生命周期 (4h)
+2. **HP-004**: CampaignManager 生命周期 (3h)
    - 添加引擎超期清理
-   - 集成SettlementService
 
 3. **HP-006**: Socket disconnect 处理 (3h)
    - 实现playerDisconnect处理
@@ -142,20 +105,16 @@ if (!actor) continue;
 
 ## 📋 执行检查清单
 
-### Week 1 (Critical - 52h)
-- [ ] CR-001: SettlementService 完整实现
+### Week 1 (Critical - 34h)
 - [ ] CR-002/003/004: SocketServer 认证/权限/CORS
 - [ ] CR-005: CombatEngine.processQueue() 完整实现
-- [ ] CR-006: 战斗结束检测
 - [ ] CR-007: 动作取消优化(O(n)→O(1))
 - [ ] CR-008: 并发控制
 - [ ] CR-009: VisibilityFilter FoW/LoS
-- [ ] CR-010: ClashPool 过滤修复
-- [ ] CR-011: INTERACT 处理
 
 ### Week 2 (High Priority - 51h)
 - [ ] HP-001-003: 空文件填充
-- [ ] HP-004-005: CampaignManager 生命周期
+- [ ] HP-004: CampaignManager 生命周期
 - [ ] HP-006: disconnect 处理
 - [ ] HP-007-008: ClashPool 细节
 - [ ] HP-009: RuleEvaluator 缓存
@@ -196,26 +155,11 @@ socket.on('CONTROL_CHARACTER', (characterId, action) => {
 });
 ```
 
-### #2: 战斗结算 (CR-001)
-**当前**: 战斗无法结算，结果无法落库  
-**修复**: 实现SettlementService  
-**影响**: MVP功能完整性  
-**工作量**: 12h
-
-```typescript
-public async settle(sceneId: string, result: BattleResult): Promise<void> {
-    // 1. 更新角色数据
-    // 2. 记录战斗日志
-    // 3. 分配战利品
-    // 4. 触发后续剧情
-}
-```
-
-### #3: 战斗引擎 (CR-005+CR-006+CR-007+CR-008)
+### #2: 战斗引擎 (CR-005+CR-007+CR-008)
 **当前**: 核心事件循环不完整，无法完整运行战斗  
 **修复**: 完整实现processQueue和生命周期管理  
 **影响**: 整个游戏可玩性  
-**工作量**: 20h
+**工作量**: 17h
 
 ```typescript
 // 完整的事件处理循环
@@ -267,12 +211,10 @@ async processQueue(): Promise<void> {
 - MP-010: 无错误回调 (1h)
 - LP-009: 无加密 (3h)
 
-**packages/backend/src/campaigns/engines/CombatEngine.ts** (6个问题, 27h)
+**packages/backend/src/campaigns/engines/CombatEngine.ts** (4个问题, 18h)
 - CR-005: processQueue不完整 (8h)
-- CR-006: 缺少战斗结束 (3h)
 - CR-007: 动作取消O(n) (5h)
 - CR-008: 缺少并发控制 (4h)
-- CR-011: INTERACT缺失 (2h)
 - MP-008: currentTick无上界 (1h)
 
 **packages/backend/src/core/systems/EffectSystem.ts** (4个问题, 10h)
@@ -292,10 +234,10 @@ async processQueue(): Promise<void> {
 ## 📞 常见问题解答
 
 ### Q: 最少要花多少时间才能让游戏可玩？
-**A**: 最少需要完成所有11个Critical问题 (52h ≈ 1周)
+**A**: 最少需要完成所有7个Critical问题 (34h ≈ 1周)
 
 ### Q: 哪个问题最紧急？
-**A**: CR-002 (SocketServer认证) 和 CR-001 (SettlementService)
+**A**: CR-002 (SocketServer认证) 和 CR-005 (CombatEngine.processQueue)
 
 ### Q: 可以并行处理哪些问题？
 **A**: 

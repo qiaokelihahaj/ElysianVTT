@@ -1,7 +1,7 @@
 # ElysianVTT 问题清单 - 按模块分类
 
 **生成日期**: 2026年4月30日  
-**总问题数**: 58个（去重统一）
+**总问题数**: 53个（已移除已修复项）
 
 ---
 
@@ -9,29 +9,26 @@
 
 | 模块 | Critical | High | Medium | Low | 总计 | 总工作量 |
 |------|----------|------|--------|-----|------|---------|
-| 后端核心引擎 | 6 | 7 | 10 | 3 | 26 | 64h |
+| 后端核心引擎 | 4 | 7 | 10 | 3 | 24 | 58h |
 | 网络 | 3 | 3 | 3 | 1 | 10 | 18h |
-| 业务逻辑 | 1 | 3 | 0 | 0 | 4 | 7h |
+| 业务逻辑 | 0 | 2 | 0 | 0 | 2 | 5h |
 | 前端 | 0 | 4 | 8 | 2 | 14 | 25h |
 | 数据库 | 0 | 1 | 0 | 4 | 5 | 8h |
 | 测试 | 0 | 0 | 2 | 0 | 2 | 7h |
 | 基础设施 | 0 | 0 | 0 | 1 | 1 | 2h |
-| **总计** | **11** | **18** | **23** | **11** | **58** | **158h** |
+| **总计** | **7** | **17** | **23** | **11** | **53** | **139h** |
 
 ---
 
-# 1. 后端核心引擎 (26 issues, 64h)
+# 1. 后端核心引擎 (24 issues, 58h)
 
-## Critical (6 issues, 26h)
+## Critical (4 issues, 20h)
 
 | ID | 优先级 | 问题 | 工作量 | 文件 |
 |----|--------|------|--------|------|
 | CR-005 | 🔴 | CombatEngine.processQueue() 实现不完整 | 8h | CombatEngine.ts |
-| CR-006 | 🔴 | CombatEngine 缺少战斗结束逻辑 | 3h | CombatEngine.ts |
 | CR-007 | 🔴 | CombatEngine 动作取消性能 O(n) | 5h | CombatEngine.ts |
 | CR-008 | 🔴 | CombatEngine 缺少并发控制 | 4h | CombatEngine.ts |
-| CR-010 | 🔴 | ClashPool decorateEvents() 过滤过严 | 1h | ClashPool.ts |
-| CR-011 | 🔴 | INTERACT意图处理缺失 | 2h | CombatEngine.ts |
 
 ## High Priority (7 issues, 19h)
 
@@ -68,11 +65,11 @@
 
 ### 关键文件清单 (后端核心引擎)
 - ✅ **PriorityQueue.ts** - 5个问题 (5.5h)
-- ✅ **ClashPool.ts** - 4个问题 (4h)
+- ✅ **ClashPool.ts** - 3个问题 (3h)
 - ✅ **RuleEvaluator.ts** - 6个问题 (6.5h)
 - ✅ **EffectSystem.ts** - 4个问题 (10h)
 - ✅ **SpatialSystem.ts** - 3个问题 (10h)
-- ✅ **CombatEngine.ts** - 6个问题 (25h)
+- ✅ **CombatEngine.ts** - 4个问题 (18h)
 
 ---
 
@@ -115,25 +112,17 @@
 
 ---
 
-# 3. 业务逻辑 (4 issues, 7h)
+# 3. 业务逻辑 (2 issues, 5h)
 
-## Critical (1 issue, 12h)
-
-| ID | 优先级 | 问题 | 工作量 | 文件 |
-|----|--------|------|--------|------|
-| CR-001 | 🔴 | SettlementService 文件为空 | 12h | SettlementService.ts |
-
-## High Priority (3 issues, 6h)
+## High Priority (2 issues, 5h)
 
 | ID | 优先级 | 问题 | 工作量 | 文件 |
 |----|--------|------|--------|------|
 | HP-004 | 🟡 | CampaignManager 无生命周期管理 | 3h | CampaignManager.ts |
-| HP-005 | 🟡 | CampaignManager 缺少Settlement集成 | 1h | CampaignManager.ts |
 | HP-018 | 🟡 | Scene 文件为空 | 2h | Scene.ts |
 
 ### 关键文件清单 (业务逻辑)
-- 📝 **SettlementService.ts** - 1个问题 (12h) - **空文件**
-- ⚠️ **CampaignManager.ts** - 2个问题 (4h)
+- ⚠️ **CampaignManager.ts** - 1个问题 (3h)
 - 📝 **Scene.ts** - 1个问题 (2h) - **空文件**
 
 ---
@@ -221,37 +210,34 @@
 
 ---
 
-## 🚨 7个需要立即解决的空文件
+## 🚨 5个需要立即解决的空文件
 
 按优先级排序：
 
 | # | 文件 | 模块 | 优先级 | 工作量 | 描述 |
 |---|------|------|--------|--------|------|
-| 1 | SettlementService.ts | 业务逻辑 | 🔴 CRITICAL | 12h | MVP Phase 1 无法完成 |
-| 2 | VisibilityFilter.ts | 网络 | 🔴 CRITICAL | 8h | FoW/LoS系统必需 |
-| 3 | IntentRouter.ts | 网络 | 🟡 HIGH | 4h | 代码组织 |
-| 4 | StateBroadcaster.ts | 网络 | 🟡 HIGH | 3h | 代码组织 |
-| 5 | Repository.ts | 数据库 | 🟡 HIGH | 3h | 测试可维护性 |
-| 6 | Scene.ts | 业务逻辑 | 🟡 HIGH | 2h | 场景管理 |
+| 1 | VisibilityFilter.ts | 网络 | 🔴 CRITICAL | 8h | FoW/LoS系统必需 |
+| 2 | IntentRouter.ts | 网络 | 🟡 HIGH | 4h | 代码组织 |
+| 3 | StateBroadcaster.ts | 网络 | 🟡 HIGH | 3h | 代码组织 |
+| 4 | Repository.ts | 数据库 | 🟡 HIGH | 3h | 测试可维护性 |
+| 5 | Scene.ts | 业务逻辑 | 🟡 HIGH | 2h | 场景管理 |
 
 ---
 
 ## ⚠️ 最高优先级的修复顺序
 
-### 第一天 (16h)
-1. **CR-001**: SettlementService 实现 (12h)
-2. **CR-002/003/004**: SocketServer 认证和权限 (5h之内搞定)
+### 第一天 (17h)
+1. **CR-002/003/004**: SocketServer 认证和权限 (17h)
 
 ### 第二天 (14h)
-3. **CR-005/006/007/008**: CombatEngine 修复 (20h)
+2. **CR-005/007/008**: CombatEngine 修复 (17h)
    - 先做processQueue() (8h)
-   - 再做战斗结束和并发 (8h)
+   - 再做并发控制 (4h)
    - 再做取消优化 (4h)
 
 ### 第三天及以后
-4. **CR-009**: VisibilityFilter 实现 (8h)
-5. **CR-010/011**: ClashPool 和 INTERACT (3h)
-6. 其他高优先级问题...
+3. **CR-009**: VisibilityFilter 实现 (8h)
+4. 其他高优先级问题...
 
 ---
 
@@ -262,17 +248,13 @@ Critical Issues Heat Map (按工作量):
 ┌────────────────────────────────┐
 │ CR-005: 8h  ██████████████     │  CombatEngine.processQueue()
 │ CR-002: 12h █████████████████  │  Socket认证
-│ CR-001: 12h █████████████████  │  SettlementService
 │ CR-009: 8h  ██████████████     │  VisibilityFilter
 │ CR-007: 5h  ████████           │  CombatEngine取消
 │ CR-008: 4h  ███████            │  CombatEngine并发
-│ CR-006: 3h  █████              │  战斗结束
 │ CR-004: 3h  █████              │  权限检查
 │ CR-003: 2h  ███                │  CORS修复
-│ CR-011: 2h  ███                │  INTERACT
-│ CR-010: 1h  ██                 │  ClashPool过滤
 └────────────────────────────────┘
-Total: 52h (本周必须)
+Total: 34h (本周必须)
 ```
 
 ---
