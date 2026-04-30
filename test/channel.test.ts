@@ -112,6 +112,13 @@ class ChannelTestEngine {
     // 技能脉冲结算
     resolveActionPulse(actor: Entity, event: ActionExecutionEvent): boolean {
         const ctx = actor.currentActionContext!;
+
+        // === RECOVERY guard: 收招阶段直接清除，不执行效果 ===
+        if (event.phase === 'RECOVERY') {
+            actor.currentActionContext = undefined;
+            return false;
+        }
+
         const template = actionDict.get(event.actionTemplateId)!;
         const targets = (event.targetIds || []).map(id => this.entities.get(id)).filter(e => e) as Entity[];
 
@@ -170,6 +177,12 @@ class ChannelTestEngine {
     // 移动脉冲结算
     resolveMovementPulse(actor: Entity, event: ActionExecutionEvent): boolean {
         const ctx = actor.currentActionContext!;
+
+        if (event.phase === 'RECOVERY') {
+            actor.currentActionContext = undefined;
+            return false;
+        }
+
         const wps = ctx.waypoints!;
         const idx = ctx.currentWaypointIndex ?? 0;
         if (idx >= wps.length) {
@@ -462,6 +475,89 @@ function runTests() {
         eng.cancelCurrentAction(a);
         assert(eng.eventQueue.every(e => e.status === 'CANCELLED'), '所有事件标记 CANCELLED');
         assert(eng.getEntity('a')!.currentActionContext === undefined, '上下文清除');
+    }
+
+    // ---- Test 9: RECOVERY event resolution — no effect re-apply, no new events ----
+    console.log('\n[Test 9] RECOVERY 结算 → 不重施效果、不推新事件、上下文清除');
+    {
+        // This test explicitly verifies the bug fix:
+        // STARTUP → push RECOVERY → resolve RECOVERY → should clear ctx, NOT re-apply effects
+        const eng = new ChannelTestEngine();
+        const a: Entity = { id: 'a', transform: { coords: { x: 0, y: 0, z: 0 } }, resources: { current: { hp: 100 }, max: { hp: 100 } } };
+        const b: Entity = { id: 'b', transform: { coords: { x: 2, y: 0, z: 0 } }, resources: { current: { hp: 50 }, max: { hp: 50 } } };
+        eng.addEntity(a); eng.addEntity(b);
+
+        // --- STARTUP pulse ---
+        a.currentActionContext = { type: 'CASTING', actionId: 'e1', actionTemplateId: 'SINGLE_SLASH', phase: 'STARTUP', resolveTick: 10, pulseCount: 0 };
+        eng.currentTick = 10;
+        eng.pushEvent({ eventId: 'e1', eventType: 'ACTION_PHASE', targetTick: 10, status: 'PENDING', actorId: 'a', targetIds: ['b'], actionTemplateId: 'SINGLE_SLASH', phase: 'STARTUP' });
+
+        const startupEvt = eng.eventQueue.shift()! as ActionExecutionEvent;
+        const continued = eng.resolveActionPulse(a, startupEvt);
+        assert(!continued, '单段 STARTUP 后不再递归');
+        assert(eng.getEntity('b')!.resources.current.hp === 25, 'b HP=25 after STARTUP');
+        assert(a.currentActionContext!.phase === 'RECOVERY', 'phase → RECOVERY');
+        assert(a.currentActionContext!.pulseCount === 1, 'pulseCount=1');
+
+        // --- RESOLVE RECOVERY ---
+        eng.currentTick = 15;
+        // 确认队列中只有 RECOVERY 事件
+        assert(eng.eventQueue.length === 1, '队列中有 1 个事件');
+        const recoveryEvt = eng.eventQueue.shift()! as ActionExecutionEvent;
+        assert(recoveryEvt.phase === 'RECOVERY', '确认是 RECOVERY 事件');
+
+        // 结算 RECOVERY
+        const result = eng.resolveActionPulse(a, recoveryEvt);
+        assert(!result, 'RECOVERY 返回 false');
+
+        // === 核心验证：RECOVERY 不能再次执行效果 ===
+        assert(eng.getEntity('b')!.resources.current.hp === 25,
+            `✅ b HP 仍是 25 (不是 0) — RECOVERY 不再扣血 (actual: ${eng.getEntity('b')!.resources.current.hp})`);
+
+        // === 核心验证：上下文已清除 ===
+        assert(a.currentActionContext === undefined, '✅ context 已清除');
+
+        // === 核心验证：队列为空（没有多压入新事件） ===
+        assert(eng.eventQueue.length === 0,
+            `✅ 队列为空，无新事件压入 (size: ${eng.eventQueue.length})`);
+
+        // === 核心验证：pulseCount 未递增 ===
+        // (pulseCount 随 ctx 一起清除了，无法直接读，但 HP 没变已证明没有重新执行效果)
+    }
+
+    // ---- Test 10: RECOVERY after channel → clears without re-applying ----
+    console.log('\n[Test 10] Channel 三脉冲后 RECOVERY 结算 → 不重施');
+    {
+        const eng = new ChannelTestEngine();
+        const a: Entity = { id: 'a', transform: { coords: { x: 0, y: 0, z: 0 } }, resources: { current: { hp: 100, concentration: 50, poise: 30 }, max: { hp: 100, concentration: 50, poise: 30 } } };
+        const b: Entity = { id: 'b', transform: { coords: { x: 2, y: 0, z: 0 } }, resources: { current: { hp: 100 }, max: { hp: 100 } } };
+        eng.addEntity(a); eng.addEntity(b);
+
+        a.currentActionContext = { type: 'CASTING', actionId: 'e1', actionTemplateId: 'FIRE_STORM', phase: 'STARTUP', resolveTick: 15, pulseCount: 0 };
+        eng.currentTick = 15;
+
+        // Run 3 pulses
+        eng.pushEvent({ eventId: 'e1', eventType: 'ACTION_PHASE', targetTick: 15, status: 'PENDING', actorId: 'a', targetIds: ['b'], actionTemplateId: 'FIRE_STORM', phase: 'STARTUP' });
+        for (let i = 0; i < 3; i++) {
+            const evt = eng.eventQueue.shift()! as ActionExecutionEvent;
+            eng.resolveActionPulse(a, evt);
+            eng.currentTick += 8;
+        }
+
+        assert(a.currentActionContext!.phase === 'RECOVERY', '3 pulses done → RECOVERY');
+        assert(eng.getEntity('b')!.resources.current.hp === 55, 'b HP=55 after 3 pulses (3×15)');
+
+        // Resolve RECOVERY
+        eng.currentTick += 10;
+        const recEvt = eng.eventQueue.shift()! as ActionExecutionEvent;
+        assert(recEvt.phase === 'RECOVERY', '确认 RECOVERY 事件');
+        eng.resolveActionPulse(a, recEvt);
+
+        // Verify no re-application
+        assert(eng.getEntity('b')!.resources.current.hp === 55,
+            `✅ b HP 仍是 55，未被 RECOVERY 重施伤害 (actual: ${eng.getEntity('b')!.resources.current.hp})`);
+        assert(a.currentActionContext === undefined, '✅ context cleared');
+        assert(eng.eventQueue.length === 0, '✅ no new events pushed');
     }
 
     console.log(`\n${'='.repeat(40)}`);

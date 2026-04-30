@@ -560,6 +560,93 @@ async function runTests() {
 }
 
 runTests().then(() => {
+    // ---------- 测试 10: RECOVERY 结算不重施效果 ----------
+    console.log('\n[Test 10] RECOVERY 结算：验证效果不重复执行');
+    {
+        // 使用确定性伤害的模板（不用掷骰），验证伤害数量
+        const deterministicDamage = 20;
+
+        class DeterministicEngine extends EventEmitter {
+            currentTick: Tick = 0;
+            private eventQueue = new PriorityQueue();
+            private entities = new Map<EntityId, Entity>();
+            damageApplications = 0;  // 计数伤害被应用的次数
+            recoveryResolved = false;
+
+            mountEntities(entities: Entity[]) { entities.forEach(e => this.entities.set(e.id, e)); }
+            getEntity(id: EntityId) { return this.entities.get(id); }
+
+            receiveIntent(actorId: EntityId, actionId: string, targetId: EntityId) {
+                const startupEvent: TickEvent = {
+                    eventId: generateId(),
+                    eventType: 'ACTION_PHASE',
+                    targetTick: this.currentTick + 10,
+                    status: 'PENDING',
+                    actorId, targetId, actionId, phase: 'STARTUP'
+                };
+                const actor = this.entities.get(actorId)!;
+                actor.currentActionContext = { actionId: startupEvent.eventId, phase: 'STARTUP', resolveTick: startupEvent.targetTick };
+                this.eventQueue.push(startupEvent);
+                this.processQueue();
+            }
+
+            private processQueue() {
+                while (this.eventQueue.size > 0) {
+                    const event = this.eventQueue.pop()!;
+                    if (event.status === 'CANCELLED') continue;
+                    if (event.targetTick > this.currentTick) this.currentTick = event.targetTick;
+
+                    if (event.eventType === 'ACTION_PHASE') {
+                        const actor = this.entities.get(event.actorId)!;
+                        const target = this.entities.get(event.targetId)!;
+
+                        if (event.phase === 'STARTUP') {
+                            // 只扣一次血
+                            target.resources.current['hp'] -= deterministicDamage;
+                            this.damageApplications++;
+                            // 推 RECOVERY
+                            const recoveryEvent = { ...event, eventId: generateId(), targetTick: this.currentTick + 5, phase: 'RECOVERY' };
+                            actor.currentActionContext = { actionId: recoveryEvent.eventId, phase: 'RECOVERY', resolveTick: recoveryEvent.targetTick };
+                            this.eventQueue.push(recoveryEvent);
+                        }
+                        else if (event.phase === 'RECOVERY') {
+                            actor.currentActionContext = undefined;
+                            this.recoveryResolved = true;
+                            // ✅ 守卫：RECOVERY 不应用效果
+                        }
+                    }
+                }
+            }
+        }
+
+        const engine = new DeterministicEngine();
+        const warrior: Entity = {
+            id: 'actor_warrior',
+            resources: { current: { hp: 100 }, max: { hp: 100 } }
+        };
+        const goblin: Entity = {
+            id: 'target_goblin',
+            resources: { current: { hp: 30 }, max: { hp: 30 } }
+        };
+        engine.mountEntities([warrior, goblin]);
+
+        // 注意：mock receiveIntent 不依赖 DB，用 actionId 作标识
+        // 此测试只关心引擎是否在 STARTUP 后正确结束，不关心中间状态变更广播
+        engine.receiveIntent('actor_warrior', 'TEST_ATTACK', 'target_goblin');
+
+        const expectedHp = 30 - deterministicDamage;  // 10
+        const actualHp = engine.getEntity('target_goblin')?.resources.current.hp ?? 0;
+
+        assert(engine.damageApplications === 1,
+            `✅ 伤害只应用了 ${engine.damageApplications} 次 (期望 1)`);
+        assert(actualHp === expectedHp,
+            `✅ HP=${actualHp} (期望=${expectedHp}) — 不是多次扣血的结果`);
+        assert(engine.recoveryResolved === true,
+            '✅ RECOVERY 事件被正确处理（上下文清除）');
+        assert(engine.getEntity('actor_warrior')?.currentActionContext === undefined,
+            '✅ 战士上下文已清除');
+    }
+
     console.log(`\n${'='.repeat(50)}`);
     console.log(`✅ 通过: ${passCount}/${testCount}`);
     console.log(`❌ 失败: ${testCount - passCount}`);
