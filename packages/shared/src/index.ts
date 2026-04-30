@@ -50,11 +50,13 @@ export interface Entity {
     resources: ResourcePool;
     activeEffects: AppliedEffect[];
     
-    // 状态机上下文：记录当前正在执行的长前摇动作
+    // 状态机上下文：记录当前正在执行的长前摇动作或移动
     currentActionContext?: {
-        actionId: string;
+        type: 'CASTING' | 'MOVING';
+        actionId: string;                              // CASTING 时为 ActionExecutionEvent.eventId，MOVING 时为 movementEventGroupId
         phase: 'STARTUP' | 'ACTIVE' | 'RECOVERY';
         resolveTick: number;
+        eventIds?: string[];                           // MOVING 时存储所有 MovementStepEvent.eventId，用于打断时批量取消
     };
 }
 
@@ -154,6 +156,14 @@ export interface ActionExecutionEvent extends TickEvent {
     targetIds?: EntityId[];
     actionTemplateId: string;
     phase: 'STARTUP' | 'ACTIVE' | 'RECOVERY';
+}
+
+export interface MovementStepEvent extends TickEvent {
+    eventType: 'MOVEMENT_STEP';
+    actorId: EntityId;
+    currentCoords: Vector3D;    // 本次到达的坐标
+    targetCoords: Vector3D;     // 最终终点（方便寻路纠正）
+    isLastStep: boolean;        // 是否是最后一步（用于解除移动状态）
 }
 
 export interface IEngineInstance {

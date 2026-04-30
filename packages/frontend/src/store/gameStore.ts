@@ -14,6 +14,7 @@ interface GameState {
     entities: Record<string, Entity>;
     selectedEntityId: string | null;
     uiState: UiState;
+    movementTargets: Record<string, Vector3D>;       // 本地移动目标（盲区推测用）
     
     // Actions
     setInitialScene: (entities: Entity[], tick: number) => void;
@@ -27,18 +28,23 @@ interface GameState {
     setPendingMoveCoords: (coords: Vector3D | null) => void;
     setActiveActionId: (actionId: string | null) => void;
     resetUiState: () => void;
+
+    // Movement Actions
+    setMovementTarget: (entityId: string, coords: Vector3D) => void;
+    clearMovementTarget: (entityId: string) => void;
 }
 
 export const useGameStore = create<GameState>()(
     immer((set) => ({
-        tick: 0,
-        entities: {},
-        selectedEntityId: null,
-        uiState: {
-            mode: 'IDLE',
-            pendingMoveCoords: null,
-            activeActionId: null
-        },
+            tick: 0,
+            entities: {},
+            selectedEntityId: null,
+            uiState: {
+                mode: 'IDLE',
+                pendingMoveCoords: null,
+                activeActionId: null
+            },
+            movementTargets: {},
 
         setInitialScene: (entities, tick) => set((state) => {
             state.tick = tick;
@@ -89,10 +95,16 @@ export const useGameStore = create<GameState>()(
         }),
         setPendingMoveCoords: (coords) => set((state) => { state.uiState.pendingMoveCoords = coords; }),
         setActiveActionId: (actionId) => set((state) => { state.uiState.activeActionId = actionId; }),
-        resetUiState: () => set((state) => {
-            state.uiState.mode = 'IDLE';
-            state.uiState.pendingMoveCoords = null;
-            state.uiState.activeActionId = null;
-        }),
-    }))
+            resetUiState: () => set((state) => {
+                state.uiState.mode = 'IDLE';
+                state.uiState.pendingMoveCoords = null;
+                state.uiState.activeActionId = null;
+            }),
+            setMovementTarget: (entityId, coords) => set((state) => {
+                state.movementTargets[entityId] = coords;
+            }),
+            clearMovementTarget: (entityId) => set((state) => {
+                delete state.movementTargets[entityId];
+            }),
+        }))
 );

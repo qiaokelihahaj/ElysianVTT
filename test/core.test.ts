@@ -358,8 +358,13 @@ class CombatEngine extends EventEmitter {
 // ==========================================
 // 6. 单元测试集 (Test Suite)
 // ==========================================
+let testCount = 0;
+let passCount = 0;
+
 function assert(condition: boolean, label: string): void {
+    testCount++;
     if (condition) {
+        passCount++;
         console.log(`  ✅ ${label}`);
     } else {
         console.error(`  ❌ FAIL: ${label}`);
@@ -555,5 +560,15 @@ async function runTests() {
 }
 
 runTests().then(() => {
-    console.log('\n🎯 所有测试完成!');
+    console.log(`\n${'='.repeat(50)}`);
+    console.log(`✅ 通过: ${passCount}/${testCount}`);
+    console.log(`❌ 失败: ${testCount - passCount}`);
+    console.log(`${'='.repeat(50)}\n`);
+    
+    if ((testCount - passCount) > 0) {
+        process.exit(1);
+    }
+}).catch((error) => {
+    console.error('测试执行错误:', error);
+    process.exit(1);
 });

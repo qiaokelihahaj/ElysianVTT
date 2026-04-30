@@ -13,3 +13,29 @@ node_modules/
 .vscode/
 *.swp
 *.swo
+
+# Additional common ignores
+# Node / package manager
+**/node_modules/
+.pnpm/
+
+# Build artifacts
+**/coverage/
+coverage/
+**/.cache/
+**/.turbo/
+**/.next/
+/.vite/
+
+# TypeScript build info
+**/*.tsbuildinfo
+
+# Lockfile or debugging logs (keep lockfile tracked; ignore pnpm debug)
+pnpm-debug.log*
+
+# Local editor state
+.history/
+
+# dotenv local variants (already covered above, keep for clarity)
+.env.local
+.env.*.local

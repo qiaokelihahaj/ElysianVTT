@@ -199,44 +199,79 @@ export class RendererManager {
     private update(dt: number) {
         const state = useGameStore.getState();
         const entities = state.entities;
+        const movementTargets = state.movementTargets;
         
-        // 设定的平滑系数，值越近平滑程度越低 (1 = 瞬间到达, 0.1 = 平滑补间)
-        // 结合 deltaTime (dt) 使补间在不同帧率下尽可能一致
         const LERP_FACTOR = 0.2; 
         const adjustedLerp = 1 - Math.pow(1 - LERP_FACTOR, dt);
         
+        // 容差阈值：超过此值则权威纠偏
+        const TOLERANCE = 0.3;
+
         for (const [id, sprite] of this.entitySprites) {
             const entity = entities[id];
-            if (entity) {
-                // 1. 位置线性插值 (Linear Interpolation)
-                const targetX = entity.transform.coords.x;
-                const targetY = entity.transform.coords.y;
+            if (!entity) continue;
+
+            const serverX = entity.transform.coords.x;
+            const serverY = entity.transform.coords.y;
+            const localTarget = movementTargets[id];
+
+            if (localTarget) {
+                // === Dead Reckoning: 本地盲区推测 ===
+                // 直接向本地存储的目标点平滑补间（不等服务器）
+                const dx = localTarget.x - sprite.x;
+                const dy = localTarget.y - sprite.y;
+                const localDist = Math.sqrt(dx * dx + dy * dy);
+
+                if (localDist < 0.05) {
+                    // 已到达本地目标
+                    sprite.x = localTarget.x;
+                    sprite.y = localTarget.y;
+                    state.clearMovementTarget(id);
+                } else {
+                    // 平滑动画朝向本地目标
+                    sprite.x += dx * adjustedLerp;
+                    sprite.y += dy * adjustedLerp;
+
+                    // === 容差纠正 (Tolerance Correction) ===
+                    // 计算本地渲染位置与服务器权威位置的偏差
+                    const serverDist = Math.sqrt(
+                        (serverX - sprite.x) ** 2 + (serverY - sprite.y) ** 2
+                    );
+
+                    if (serverDist > TOLERANCE) {
+                        // 偏差过大 → 强制纠偏（被击退/打断/定身等）
+                        sprite.x = serverX;
+                        sprite.y = serverY;
+                        state.clearMovementTarget(id);
+                    }
+                }
+            } else {
+                // === 无本地目标，跟随服务器坐标 ===
+                const targetX = serverX;
+                const targetY = serverY;
                 
                 sprite.x += (targetX - sprite.x) * adjustedLerp;
                 sprite.y += (targetY - sprite.y) * adjustedLerp;
-                
-                // 2. 角度朝向插值 (Shortest path rotation in degrees)
-                const targetFacing = entity.transform.facing;
-                let diff = targetFacing - sprite.angle;
-                
-                // 归一化差值到 [-180, 180] 之间，确保走最短弧线
-                while (diff < -180) diff += 360;
-                while (diff > 180) diff -= 360;
-                
-                sprite.angle += diff * adjustedLerp;
             }
+
+            // 角度朝向插值
+            const targetFacing = entity.transform.facing;
+            let diff = targetFacing - sprite.angle;
+            while (diff < -180) diff += 360;
+            while (diff > 180) diff -= 360;
+            sprite.angle += diff * adjustedLerp;
         }
 
-        // 3. Phantom Pulse effect
+        // Phantom Pulse effect
         if (this.phantomHero && this.phantomHero.visible) {
             this.phantomHero.alpha = 0.4 + Math.sin(Date.now() / 200) * 0.2;
-            this.phantomHero.rotation += 0.05 * dt; // spinning phantom
+            this.phantomHero.rotation += 0.05 * dt;
         }
 
-        // 4. 浮动文字特效更新
+        // 浮动文字特效更新
         for (let i = this.activeFloatingTexts.length - 1; i >= 0; i--) {
             const fx = this.activeFloatingTexts[i];
-            fx.life -= dt * (1000 / 60); // approx ms based on 60fps
+            fx.life -= dt * (1000 / 60);
             fx.sprite.y -= fx.velY * dt;
             fx.sprite.alpha = fx.life / fx.maxLife;
 

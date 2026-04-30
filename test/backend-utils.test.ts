@@ -140,15 +140,15 @@ function generatePrefixedId(prefix: string): string {
 // ==========================================
 // 4. 测试工具
 // ==========================================
-let passed = 0;
-let failed = 0;
+let testCount = 0;
+let passCount = 0;
 
 function assert(condition: boolean, label: string): void {
+    testCount++;
     if (condition) {
-        passed++;
+        passCount++;
         console.log(`  ✅ ${label}`);
     } else {
-        failed++;
         console.error(`  ❌ FAIL: ${label}`);
         process.exitCode = 1;
     }
@@ -420,9 +420,10 @@ testSafeJsonParser();
 testIdGenerator();
 
 console.log(`\n${'='.repeat(60)}`);
-console.log(`  结果: ${passed} 通过, ${failed} 失败`);
+console.log(`✅ 通过: ${passCount}/${testCount}`);
+console.log(`❌ 失败: ${testCount - passCount}`);
 console.log(`${'='.repeat(60)}`);
 
-if (failed > 0) {
+if ((testCount - passCount) > 0) {
     process.exit(1);
 }

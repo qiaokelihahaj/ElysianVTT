@@ -12,6 +12,15 @@ export const HUD: React.FC = () => {
     
     const selectedEntity = selectedEntityId ? entities[selectedEntityId] : null;
 
+    const handleConfirmMove = () => {
+        if (selectedEntity && uiState.pendingMoveCoords) {
+            IntentDispatcher.dispatchMove(selectedEntity.id, uiState.pendingMoveCoords);
+            // 盲区推测：通知渲染器直接向目标点平滑动画
+            useGameStore.getState().setMovementTarget(selectedEntity.id, uiState.pendingMoveCoords);
+            resetUiState();
+        }
+    };
+
     return (
         <div className="absolute inset-0 pointer-events-none flex flex-col justify-between p-4">
             {/* Top Bar: Game Info and Hero Status */}
@@ -70,12 +79,7 @@ export const HUD: React.FC = () => {
                                 Cancel
                             </button>
                             <button 
-                                onClick={() => {
-                                    if (selectedEntity && uiState.pendingMoveCoords) {
-                                        IntentDispatcher.dispatchMove(selectedEntity.id, uiState.pendingMoveCoords);
-                                        resetUiState();
-                                    }
-                                }}
+                                onClick={handleConfirmMove}
                                 disabled={!uiState.pendingMoveCoords}
                                 className="px-4 py-2 rounded bg-amber-600 hover:bg-amber-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium transition-colors"
                             >

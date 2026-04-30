@@ -6,7 +6,7 @@
 
 ## 一、项目定位与核心理念
 
-**ElysianVTT** 是一个基于「连续时间轴（Tick System）」与「多资源池博弈」的硬核战术动作类 TRPG 虚拟桌面引擎。
+**ElysianVTT** 是一个基于「连续时间轴（Tick System）」与「多资源池博弈」的硬核战术动作类 TRPG 虚拟桌面引擎。当前处于 **MVP Phase 1**，核心战斗引擎已可运行，前端已具备基础渲染与交互能力。
 
 **与同类产品的差异：** 传统回合制 VTT 由客户端 UI 驱动，ElysianVTT 由**后端优先队列离散事件模拟**驱动——时间轴不再被回合划分，而是由动作的前摇(Startup)、判定(Active)、收招(Recovery) 三阶段精确编排。这意味着「打断」「同时相杀」「半路拦截弹道」等机制天然成立。
 
@@ -18,6 +18,7 @@
 | 内存优先 | 战斗期间状态仅在内存中推演，不做数据库写入，结束后由 SettlementService 统一落库 |
 | 增量广播 | 引擎只向客户端推送**状态差分**（哪个实体的哪个属性变成了什么），不推送完整对象 |
 | 纯函数结算 | 规则求值通过 mathjs 沙箱执行，禁止 `eval()` |
+| 骰池预编译 | 骰子规则（爆炸骰/重投/暴击标签）编译为 O(1) 原生比较函数，支持千级骰子高效推演 |
 
 ---
 
@@ -58,7 +59,8 @@ Client (WebSocket)                Backend                         Database
                     └─► CampaignManager.getOrCreateEngine() ──► findMany()
                           └─► new CombatEngine()                   │
                                 └─► mountEntities() ◄── 注水数据 ◄─┘
-  ◄─JOIN_SUCCESS──                                   
+   ◄──SCENE_SYNC───                                  (发送全量状态)
+   ◄──JOIN_SUCCESS──                                  
 
   ──CLIENT_INTENT─► SocketServer
                     └─► CampaignManager.getEngine()
@@ -175,13 +177,48 @@ Client (WebSocket)                Backend                         Database
 
 ### 3.4 前端 (`packages/frontend/`)
 
-| 模块 | 状态 | 说明 |
-|------|------|------|
-| 全部源码 | ⬜ | 当前仍是 Vite + React 初始模板（计数器 demo），未集成 PixiJS / Zustand / socket.io-client |
+#### 入口与根组件
+
+| 模块 | 文件 | 状态 | 职责 |
+|------|------|------|------|
+| React 入口 | `src/main.tsx` | ✅ | 挂载 `<App />` |
+| 根组件 | `src/App.tsx` | ✅ | WS 连接生命周期管理，订阅 STATE_MUTATED / VISUAL_FX / SCENE_SYNC，组装 Canvas + HUD |
+
+#### 画布渲染层 (`src/canvas/`)
+
+| 模块 | 文件 | 状态 | 职责 |
+|------|------|------|------|
+| React 画布组件 | `GameCanvas.tsx` | ✅ | 桥接 React ↔ PixiJS Application，处理 resize 与销毁 |
+| 渲染管理器 | `RendererManager.ts` | ✅ | PixiJS 单例，管理四层容器（map/entity/fx/preview），实体精灵渲染，网格绘制，浮动文字动画（FloatingText），lerp 平滑插值，幻影预览（phantom preview） |
+
+#### 网络层 (`src/network/`)
+
+| 模块 | 文件 | 状态 | 职责 |
+|------|------|------|------|
+| WebSocket 客户端 | `socketClient.ts` | ✅ | Socket.io 客户端包装，支持 connect/disconnect/joinScene/sendIntent，监听 STATE_MUTATED / VISUAL_FX / SCENE_SYNC |
+| 指令分发器 | `IntentDispatcher.ts` | ✅ | 构建 ClientIntent：dispatchMove / dispatchCastAction / dispatchInteract |
+
+#### 状态管理 (`src/store/`)
+
+| 模块 | 文件 | 状态 | 职责 |
+|------|------|------|------|
+| Zustand Store | `gameStore.ts` | ✅ | Zustand + Immer，管理 entities Map、tick、selectedEntityId、uiState（IDLE / SELECT_MOVE_TARGET / SELECT_ACTION_TARGET），支持全量场景同步 (setInitialScene) 和增量差分合并 (applyStateMutation) |
+
+#### UI 组件 (`src/ui/`)
+
+| 模块 | 文件 | 状态 | 职责 |
+|------|------|------|------|
+| HUD 叠加层 | `HUD.tsx` | ✅ | 浮动面板：HP 血量条、当前 Tick 显示、动作按钮栏（移动/技能/攻击），SELECT_MOVE_TARGET 模式叠加层 |
+
+#### 工具 (`src/utils/`)
+
+| 模块 | 文件 | 状态 | 职责 |
+|------|------|------|------|
+| 对象工具 | `objectUtils.ts` | ✅ | setNestedProperty 深层路径写入，用于差分状态合并（如 `"resources.current.hp"`） |
 
 ## 四、类型体系（`@hard-vtt/shared`）
 
-所有类型定义位于 `packages/shared/src/index.ts`（151 行），分为 5 大类。
+所有类型定义位于 `packages/shared/src/index.ts`（208 行），分为 6 大类。
 
 ### 4.1 空间与物理基础
 
@@ -263,6 +300,7 @@ interface ActionTemplate {
         radiusExpr?: ExpressionString   // AOE 范围表达式
     }
     effects: ActionEffectPayload[]      // 效果数组
+    diceRules?: DiceRule[]             // 关联掷骰规则（爆炸骰/重投/暴击标签）
 }
 
 interface ActionEffectPayload {
@@ -275,7 +313,61 @@ interface ActionEffectPayload {
 
 使用位置：`Dictionary.actions`（内存缓存）、`EffectSystem.applyAction()` 效果遍历、`RuleEvaluator.evaluate()` 表达式求值
 
-### 4.4 引擎核心调度
+### 4.4 掷骰系统
+
+```typescript
+interface RawDie {
+    id: string; sides: number; faceValue: number
+}
+
+interface DiceRule {
+    condition: string                              // 触发条件，如 "faceValue == sides"
+    actionType: 'ADD_TAG' | 'EXPLODE' | 'REROLL'   // 爆炸骰 / 重投 / 暴击标签
+    actionPayload?: string
+}
+
+interface ProcessedDie extends RawDie {
+    finalValue: number                              // 经过规则处理后的最终结果
+    tags: string[]                                  // 累积标签（如 "CRIT"）
+    isOverridden: boolean                           // 是否被玩家/技能直接改值
+}
+
+interface DicePoolResult {
+    total: number                                   // 骰池总和
+    dice: ProcessedDie[]                            // 每颗骰子的处理结果
+    poolTags: string[]                              // 骰池全局标签
+}
+```
+
+使用位置：`DiceGenerator` 生成 `RawDie`，`DiceProcessor` 预编译规则 → `DicePoolResult`，`RuleEvaluator.evaluate()` 注入表达式
+
+### 4.5 日志协议
+
+```typescript
+enum LogLevel {
+    DEBUG = 0,    // 引擎底层推演（堆排序、事件压入）
+    INFO = 1,     // 常规流程（连接建立、引擎初始化）
+    WARN = 2,     // 异常但可恢复（未找到目标）
+    ERROR = 3,    // 引擎错误（沙箱执行崩溃）
+    GAME = 4      // 游戏内核心事件（造成伤害、施加Buff），用于前端展示和回放
+}
+
+enum LogVisibility {
+    DEV = 'DEV',         // 仅开发者可见
+    GM = 'GM',           // 开发者 + GM 可见
+    PLAYER = 'PLAYER'    // 所有人可见（战斗记录面板）
+}
+
+interface LogPayload {
+    timestamp: number; sceneId?: string; tick?: number
+    namespace: string; level: LogLevel; visibility: LogVisibility
+    message: string; meta?: any
+}
+```
+
+使用位置：`Logger.ts` 实现结构化日志输出（ANSI 终端高亮），支持 sceneId / tick 上下文透传
+
+### 4.6 引擎核心调度
 
 ```typescript
 type Tick = number
@@ -309,7 +401,7 @@ interface IEngineInstance {
 
 使用位置：`CombatEngine` implements `IEngineInstance`，`CampaignManager` 管理引擎实例
 
-### 4.5 网络通讯协议
+### 4.7 网络通讯协议
 
 ```typescript
 interface ClientIntent {
@@ -416,8 +508,9 @@ model CharacterSheet {
 | `JOIN_SCENE` | Client → Server | 玩家进入场景 | `{ sceneId, actorId }` |
 | `JOIN_SUCCESS` | Server → Client | 场景加入成功 | `{ sceneId, serverTime, message }` |
 | `CLIENT_INTENT` | Client → Server | 玩家执行动作 | `{ sceneId, intent: ClientIntent }` |
+| `SCENE_SYNC` | Server → Client | 场景全量状态同步 | `{ tick, entities: Entity[] }` |
 | `STATE_MUTATED` | Server → Client | 每个 Tick 结算后 | `StateMutationPayload` |
-| `VISUAL_FX` | Server → Client | 需要前端播放特效 | `VisualEventPayload` (规划中) |
+| `VISUAL_FX` | Server → Client | 需要前端播放特效 | `VisualEventPayload` |
 | `ERROR` | Server → Client | 操作失败 | `{ code, message }` |
 | `disconnect` | Client → Server | 连接断开 | 无 |
 
@@ -427,7 +520,8 @@ model CharacterSheet {
 1. Client ──JOIN_SCENE──► Server
                          └─► CampaignManager 从 DB 注水实体
                          └─► socket.join(sceneId)
-   Client ◄──JOIN_SUCCESS─── Server
+   Client ◄──SCENE_SYNC──── Server  (全量实体状态 → Zustand store)
+   Client ◄──JOIN_SUCCESS── Server
 
 2. Client ──CLIENT_INTENT──► Server
                              └─► CampaignManager.getEngine(sceneId)
@@ -438,7 +532,7 @@ model CharacterSheet {
                                                │           └─► RuleEvaluator.evaluate()
                                                ├─► broadcastMutations()
                                                └─► resolveEvent(RECOVERY)
-   Client ◄──STATE_MUTATED─── Server  (推送到房间内所有客户端)
+   Client ◄──STATE_MUTATED── Server  (推送到房间内所有客户端)
 ```
 
 ---
@@ -517,10 +611,15 @@ Client Intent (CAST_ACTION)
 - `actor.[attr]` → 从 `actor.resources.current` 展开属性（如 `actor.str`、`actor.hp`）
 - `target.[attr]` → 从 `target.resources.current` 展开属性
 
-**掷骰宏预处理：**
-- 正则 `/^(\d+)d(\d+)$/` 匹配 `NdM` 格式
-- 如 `2d6` → `Math.floor(Math.random() * 6) + 1` 执行 N 次求和
-- 返回确定数值后注入表达式再求值
+**掷骰系统：**
+- 正则 `/^(\d+)d(\d+)$/` 匹配 `NdM` 格式，如 `2d6` → N 次随机取面求和
+- `DiceGenerator` 独立生成原始骰子 `RawDie[]`
+- `DiceProcessor` 预编译规则为 AST（O(1) 比较函数），支持：
+  - **EXPLODE** 爆炸骰（掷出最大面值追加一颗骰子，可链式触发）
+  - **REROLL** 重投（满足条件时重新掷骰）
+  - **ADD_TAG** 暴击标签（如 `faceValue == sides → CRIT`）
+  - **override** 玩家介入改值（如消耗资源直接修定骰值）
+- 结果输出 `DicePoolResult`，其 `total` 注入 mathjs 表达式
 
 **示例：**
 ```
@@ -573,25 +672,36 @@ bootstrap()
 | 时间轴 | PriorityQueue ✅、时间跃迁 ✅、墓碑删除 ✅ | TickLoop（抽象封装）、ClashPool（同 Tick 并发结算） |
 | 动作系统 | STARTUP → ACTIVE → RECOVERY 三阶段 ✅ | INTERRUPT 打断机制 |
 | 效果系统 | DAMAGE ✅、HEAL ✅ | APPLY_BUFF 完整实现、PUSH、INTERRUPT |
-| 规则求值 | mathjs 沙箱 ✅、NdM 掷骰 ✅ | 复杂条件表达式、优势/劣势骰子 |
-| 网络层 | JOIN_SCENE ✅、CLIENT_INTENT ✅、STATE_MUTATED ✅ | VISUAL_FX 事件、断线托管、状态全量同步 |
+| 规则求值 | mathjs 沙箱 ✅、NdM 掷骰 ✅、骰池预编译 ✅（EXPLODE/REROLL/CRIT/override） | 复杂条件表达式、优势/劣势骰子 |
+| 网络层 | JOIN_SCENE ✅、CLIENT_INTENT ✅、STATE_MUTATED ✅、SCENE_SYNC ✅、VISUAL_FX ✅ | 断线托管、断线重连全量同步 |
 | 数据库 | Prisma Schema ✅、种子数据 ✅、Dictionary 加载 ✅ | Repository 抽象、SettlementService 回写 |
-| 日志协议 | LogPayload ✅、LogVisibility ✅、Logger.ts ✅ | 可接入可视化调试面板、Replay回放系统 |
-| 前端 | 类型依赖已引入 | **完全未开发**（仍是 Vite 模板） |
+| 日志协议 | LogPayload ✅、LogVisibility ✅、Logger.ts ✅ | 可视化调试面板、Replay 回放系统 |
+| **前端** | **PixiJS 画布 ✅、实体渲染 ✅、网格 ✅、浮动文字动画 ✅、lerp 平滑插值 ✅** | 资产系统（精灵图/动画）、选中 UI、范围预览 |
+| **前端** | **WebSocket 客户端 ✅、STATE_MUTATED 增量合并 ✅、SCENE_SYNC 全量同步 ✅** | 断线重连 UI |
+| **前端** | **Zustand 状态管理 ✅、HUD 面板 ✅、动作按钮（移动/技能） ✅** | 技能面板选择、目标选择可视化 |
+| **前端** | **IntentDispatcher（MOVE/CAST_ACTION/INTERACT） ✅** | 交互物品逻辑 |
+
+**各模块粗略完成度：**
+- Shared 类型层：~95%
+- Backend 引擎层：~65%
+- Frontend 表现层：~30%
+- 测试：~50%
+- 整体 MVP：~52%
 
 ### 9.2 推荐下一步开发顺序
 
 | 优先级 | 任务 | 原因 |
 |--------|------|------|
-| 🔴 1 | **创建前端最小可用版本** | 目前零前端代码，无法端到端验证。需要：PixiJS 画布渲染、Zustand 状态订阅 WebSocket、简单的角色/网格渲染 |
-| 🟡 2 | **扩展 `DiceProcessor.ts`** | 目前已实现极速预编译骰池，支持 NdM。下一步可在此基础上扩展 D&D 规则集所需的优势/劣势(Advantage/Disadvantage) 双骰取高取低逻辑。 |
-| ✅ 3 | ~~**实现 `Logger.ts`与精简日志**~~ | **已完成**。统一日志输出格式，确保包含 sceneId 等关键上下文信息，减少冗余并替换散落的 `console.log` |
-| 🟡 4 | **实现 `ClashPool.ts`（简化版）** | 同 Tick 多个事件按 actionPriority / speed / entityId 稳定排序 |
-| 🟢 5 | **填充 `app.ts` 空桩** | 将 Express 配置从 `index.ts` 内联代码迁移到 `app.ts` |
+| ✅ 1 | ~~**创建前端最小可用版本**~~ | **已完成。** PixiJS 画布、实体渲染、WebSocket 同步、HUD 面板、IntentDispatcher 均已具备 |
+| 🔴 2 | **Implement ClashPool.ts（简化版）** | 同 Tick 多个事件按 actionPriority / speed / entityId 稳定排序 |
+| 🟡 3 | **实现 INTERRUPT 打断机制** | 动作在前摇阶段可被特定效果打断，是实现「相杀」等战术机制的关键 |
+| 🟡 4 | **填充 `app.ts` 空桩** | 将 Express 配置从 `index.ts` 内联代码迁移到 `app.ts` |
+| 🟡 5 | **前端资产系统** | 引入精灵图加载、动画帧控制，替换当前的 Graphics 占位形状 |
 | 🟢 6 | **实现 `ExploreEngine.ts`** | 探索模式即时结算引擎（移动引擎），支持无缝切战 |
-| 🟢 7 | **数据映射解耦与 DB 查询优化** | 将 DB Sheet -> Engine Entity 转换抽离为独立函数，并在 Prisma 中应用 `select` 精简读取字段，减少 I/O 压力并解耦领域层 |
-| 🟢 8 | **场景生命周期管理** | 增加 Scene/Engine 的内存清理机制（如引用计数或 TTL 空闲回收），防止场景过多导致内存泄漏 |
-| 🟢 9 | **解耦事件监听与广播** | 将 Socket 广播逻辑从 Engine 初始化中抽离到专门的处理函数，便于后续扩展 AI 观察者或回放系统 |
+| 🟢 7 | **数据映射解耦与 DB 查询优化** | 将 DB Sheet → Engine Entity 转换抽离为独立函数，Prisma 使用 `select` 精简读取字段 |
+| 🟢 8 | **场景生命周期管理** | Scene/Engine 的内存清理机制（引用计数或 TTL 空闲回收），防止内存泄漏 |
+| 🟢 9 | **解耦事件监听与广播** | 将 Socket 广播逻辑从 Engine 初始化中抽离到专门的处理函数，便于扩展 AI 观察者或回放系统 |
+| 🟢 10 | **优势/劣势骰子** | 在 DiceProcessor 中扩展 D&D 规则集的双骰取高取低逻辑 |
 
 ---
 
@@ -609,14 +719,21 @@ bootstrap()
 
 ```bash
 cd test
-npx tsx core-test.ts
+npx tsx core.test.ts               # 战斗引擎集成测试（574 行）
+npx tsx frontend-store.test.ts     # Zustand gameStore 单元测试（25 用例）
+npx tsx frontend-intent.test.ts    # IntentDispatcher 测试（29 用例）
+npx tsx frontend-utils.test.ts     # objectUtils 测试（14 用例）
+npx tsx backend-utils.test.ts      # 后端工具测试
 ```
 
 独立测试文件在不依赖完整后端的情况下，直接实例化 `PriorityQueue`、`CombatEngine`（mock）、`RuleEvaluator`，验证：
 - 最小堆 push/pop 正确性
 - STARTUP/RECOVERY 三阶段动作流程
 - `"actor.str + 2d6"` 表达式求值
+- DiceGenerator / DiceProcessor（EXPLODE/REROLL/CRIT/override）全流程
 - STATE_MUTATED 差分广播
+- Zustand store 增量合并 / 全量同步正确性
+- IntentDispatcher 指令构建完整性
 
 ## 附录 C：项目文件关键路径速查
 
@@ -629,13 +746,20 @@ npx tsx core-test.ts
 | 优先队列 | `packages/backend/src/core/engine/PriorityQueue.ts` |
 | 效果系统 | `packages/backend/src/core/systems/EffectSystem.ts` |
 | 规则求值器 | `packages/backend/src/core/systems/RuleEvaluator.ts` |
+| 骰子处理器 | `packages/backend/src/utils/dice/DiceProcessor.ts` |
+| 骰子生成器 | `packages/backend/src/utils/dice/DiceGenerator.ts` |
 | Socket 服务器 | `packages/backend/src/network/SocketServer.ts` |
 | 战役管理器 | `packages/backend/src/campaigns/CampaignManager.ts` |
 | 规则字典 | `packages/backend/src/db/Dictionary.ts` |
 | 数据库 Schema | `packages/backend/prisma/schema.prisma` |
 | 种子数据 | `packages/backend/src/db/seed.ts` |
-| 集成测试 | `test/core-test.ts` |
+| **前端根组件** | `packages/frontend/src/App.tsx` |
+| **PixiJS 渲染管理器** | `packages/frontend/src/canvas/RendererManager.ts` |
+| **WebSocket 客户端** | `packages/frontend/src/network/socketClient.ts` |
+| **指令分发器** | `packages/frontend/src/network/IntentDispatcher.ts` |
+| **Zustand 状态管理** | `packages/frontend/src/store/gameStore.ts` |
+| **HUD 面板** | `packages/frontend/src/ui/HUD.tsx` |
+| 集成测试 | `test/core.test.ts` |
 | Docker 编排 | `docker-compose.yml` |
 | 环境检查 | `verify-env.js` |
 | 环境变量模板 | `.env.example` |
-| 审计报告 | `AUDIT.md` |
