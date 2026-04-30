@@ -426,14 +426,15 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
 
     private resolveMovementPulse(actor: Entity, actEvent: ActionExecutionEvent): void {
         const ctx = actor.currentActionContext!;
-        const waypoints = ctx.waypoints;
-        const index = ctx.currentWaypointIndex ?? 0;
 
-        if (!waypoints || index >= waypoints.length) {
+        if (actEvent.phase === 'RECOVERY' || !ctx.waypoints || (ctx.currentWaypointIndex ?? 0) >= (ctx.waypoints?.length ?? 0)) {
             actor.currentActionContext = undefined;
             this.recordMutation(actor.id, { 'currentActionContext': null });
             return;
         }
+
+        const waypoints = ctx.waypoints;
+        const index = ctx.currentWaypointIndex ?? 0;
 
         const wp = waypoints[index];
         actor.transform.coords.x = wp.x;
@@ -464,6 +465,19 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
 
     private resolveActionPulse(actor: Entity, actEvent: ActionExecutionEvent): void {
         const ctx = actor.currentActionContext!;
+
+        // === RECOVERY phase: 动作已完成，清除上下文 ===
+        if (actEvent.phase === 'RECOVERY') {
+            this.logger.game(
+                `🛡️ [Action] Tick ${this.currentTick}: ${actor.id} 收招完成.`,
+                null, LogVisibility.PLAYER, this.logCtx()
+            );
+            actor.currentActionContext = undefined;
+            this.recordMutation(actor.id, { 'currentActionContext': null });
+            return;
+        }
+
+        // === STARTUP (第一个或递归脉冲): 执行效果 + 决定后续 ===
         const template = Dictionary.getAction(actEvent.actionTemplateId);
         if (!template) return;
 
