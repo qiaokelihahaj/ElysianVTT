@@ -234,9 +234,11 @@ export interface ActionScheduledPayload {
     actionId: string;
     actionName: string;
     timeline: {
-        start: Tick;
-        active: Tick;
-        end: Tick;
+        start: Tick;                         // 意图发出时刻
+        startupEnd: Tick;                    // 前摇结束（第一个 ACTIVE 帧）
+        recoveryStart: Tick;                 // 收招开始（最后一个 ACTIVE + 1）
+        end: Tick;                           // 收招结束
+        pulseTicks?: number[];               // 每个判定帧的具体 Tick（用于帧数条高亮）
     };
     tags?: string[];
 }

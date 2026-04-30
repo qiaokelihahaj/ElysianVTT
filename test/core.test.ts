@@ -321,7 +321,7 @@ class CombatEngine extends EventEmitter {
                 logger.debug(`掷骰明细: ${JSON.stringify(rolls.dice.map(d => `${d.faceValue}${d.tags.length ? '(' + d.tags.join(',') + ')' : ''}`))}`, null, { tick: this.currentTick, sceneId: 'test-scene' });
                 logger.debug(`汇总标签: [${rolls.poolTags.join(', ')}], 总伤害: ${damage}`, null, { tick: this.currentTick, sceneId: 'test-scene' });
 
-                target.resources.current['hp'] -= damage;
+                target.resources.current['hp'] = Math.max(0, target.resources.current['hp'] - damage);
                 logger.game(`💥 造成 ${damage} 点伤害${critStr}。${target.id} 剩余HP: ${target.resources.current['hp']}`, null, 'PLAYER' as any, { tick: this.currentTick, sceneId: 'test-scene' });
 
                 this.recordMutation(target.id, { 'resources.current.hp': target.resources.current['hp'] });

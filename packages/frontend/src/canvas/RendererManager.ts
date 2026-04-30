@@ -25,6 +25,9 @@ export class RendererManager {
     private activeFloatingTexts: FloatingTextAnim[] = [];
     private phantomHero: Graphics | null = null;
 
+    private readonly DISPLAY_SCALE = 50;
+    private readonly GRID_SPACING = 50;
+
     private unsubscribeStore: (() => void) | null = null;
 
     private constructor() {}
@@ -63,7 +66,11 @@ export class RendererManager {
 
             if (state.uiState.mode === 'SELECT_MOVE_TARGET') {
                 const targetPos = this.mapLayer.toLocal(e.global);
-                state.setPendingMoveCoords({ x: targetPos.x, y: targetPos.y, z: 0 });
+                state.setPendingMoveCoords({ 
+                    x: Math.round(targetPos.x / this.DISPLAY_SCALE), 
+                    y: Math.round(targetPos.y / this.DISPLAY_SCALE), 
+                    z: 0 
+                });
             } else {
                 state.setSelectedEntityId(null);
             }
@@ -87,30 +94,26 @@ export class RendererManager {
     }
 
     private drawGrid() {
-        const graphics = new Graphics();
-        
-        // 使用一个足够大的尺寸以覆盖高分辨率屏幕，且为未来的相机缩放/平移预留空间
-        const gridSize = 10000;
-        
-        // 也可以画一个半透明的底图充当 hitArea 确保没有线条的地方也能响应 mapLayer pointerdown
-        graphics.rect(0, 0, gridSize, gridSize);
-        graphics.fill({ color: 0x000000, alpha: 0.001 });
+        // Hit area (transparent, just for click detection)
+        const hitArea = new Graphics();
+        hitArea.rect(0, 0, 10000, 10000);
+        hitArea.fill({ color: 0x000000, alpha: 0 });
+        this.mapLayer.addChild(hitArea);
 
-        for (let i = 0; i < gridSize; i += 50) {
-            graphics.moveTo(i, 0).lineTo(i, gridSize);
-            graphics.moveTo(0, i).lineTo(gridSize, i);
+        // Grid lines (separate graphics to avoid fill/stroke conflict)
+        const gridLines = new Graphics();
+        for (let i = 0; i <= 5000; i += this.GRID_SPACING) {
+            gridLines.moveTo(i, 0).lineTo(i, 5000);
+            gridLines.moveTo(0, i).lineTo(5000, i);
         }
-        
-        graphics.stroke({ width: 1, color: 0x333333 });
-        this.mapLayer.addChild(graphics);
+        gridLines.stroke({ width: 1, color: 0x2a2a2a });
+        this.mapLayer.addChild(gridLines);
     }
 
     private subscribeToStore() {
         if (this.unsubscribeStore) this.unsubscribeStore();
 
-        this.unsubscribeStore = useGameStore.subscribe((state) => {
-            // Check entities bounds / diffing manually since 
-            // Zustand is reactive but Pixi is imperative
+        const syncFromState = (state: ReturnType<typeof useGameStore.getState>) => {
             const currentEntities = state.entities;
             
             // Sync entity removal
@@ -129,9 +132,8 @@ export class RendererManager {
 
                 if (!sprite) {
                     sprite = this.createEntityDisplay(entity.type, entity.templateId, id, isSelected);
-                    // Initial snap for new entities
-                    sprite.x = entity.transform.coords.x;
-                    sprite.y = entity.transform.coords.y;
+                    sprite.x = entity.transform.coords.x * this.DISPLAY_SCALE;
+                    sprite.y = entity.transform.coords.y * this.DISPLAY_SCALE;
                     sprite.angle = entity.transform.facing;
                     
                     this.entitySprites.set(id, sprite);
@@ -146,13 +148,18 @@ export class RendererManager {
             if (this.phantomHero) {
                 if (uiState.mode === 'SELECT_MOVE_TARGET' && uiState.pendingMoveCoords) {
                     this.phantomHero.visible = true;
-                    this.phantomHero.x = uiState.pendingMoveCoords.x;
-                    this.phantomHero.y = uiState.pendingMoveCoords.y;
+                    this.phantomHero.x = uiState.pendingMoveCoords.x * this.DISPLAY_SCALE;
+                    this.phantomHero.y = uiState.pendingMoveCoords.y * this.DISPLAY_SCALE;
                 } else {
                     this.phantomHero.visible = false;
                 }
             }
-        });
+        };
+
+        this.unsubscribeStore = useGameStore.subscribe(syncFromState);
+
+        // Immediately sync entities that were loaded before subscription
+        syncFromState(useGameStore.getState());
     }
 
     private redrawEntitySprite(graphics: Graphics, type: string, templateId: string, isSelected: boolean) {
@@ -245,49 +252,43 @@ export class RendererManager {
         const LERP_FACTOR = 0.2; 
         const adjustedLerp = 1 - Math.pow(1 - LERP_FACTOR, dt);
         
-        // 容差阈值：超过此值则权威纠偏
-        const TOLERANCE = 0.3;
+        // 容差阈值：超过此值则权威纠偏 (scaled to display)
+        const TOLERANCE = this.DISPLAY_SCALE * 0.3;
 
         for (const [id, sprite] of this.entitySprites) {
             const entity = entities[id];
             if (!entity) continue;
 
-            const serverX = entity.transform.coords.x;
-            const serverY = entity.transform.coords.y;
+            const serverX = entity.transform.coords.x * this.DISPLAY_SCALE;
+            const serverY = entity.transform.coords.y * this.DISPLAY_SCALE;
             const localTarget = movementTargets[id];
 
             if (localTarget) {
-                // === Dead Reckoning: 本地盲区推测 ===
-                // 直接向本地存储的目标点平滑补间（不等服务器）
-                const dx = localTarget.x - sprite.x;
-                const dy = localTarget.y - sprite.y;
+                const targetX = localTarget.x * this.DISPLAY_SCALE;
+                const targetY = localTarget.y * this.DISPLAY_SCALE;
+                const dx = targetX - sprite.x;
+                const dy = targetY - sprite.y;
                 const localDist = Math.sqrt(dx * dx + dy * dy);
 
-                if (localDist < 0.05) {
-                    // 已到达本地目标
-                    sprite.x = localTarget.x;
-                    sprite.y = localTarget.y;
+                if (localDist < 1) {
+                    sprite.x = targetX;
+                    sprite.y = targetY;
                     state.clearMovementTarget(id);
                 } else {
-                    // 平滑动画朝向本地目标
                     sprite.x += dx * adjustedLerp;
                     sprite.y += dy * adjustedLerp;
 
-                    // === 容差纠正 (Tolerance Correction) ===
-                    // 计算本地渲染位置与服务器权威位置的偏差
                     const serverDist = Math.sqrt(
                         (serverX - sprite.x) ** 2 + (serverY - sprite.y) ** 2
                     );
 
                     if (serverDist > TOLERANCE) {
-                        // 偏差过大 → 强制纠偏（被击退/打断/定身等）
                         sprite.x = serverX;
                         sprite.y = serverY;
                         state.clearMovementTarget(id);
                     }
                 }
             } else {
-                // === 无本地目标，跟随服务器坐标 ===
                 const targetX = serverX;
                 const targetY = serverY;
                 

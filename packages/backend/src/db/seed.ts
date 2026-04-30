@@ -49,6 +49,27 @@ async function main() {
         }
     });
 
+    // 同步测试技能：所有实体同时释放 (同 Tick ClashPool 测试)
+    await prisma.actionTemplate.upsert({
+        where: { id: 'SYNC_TEST' },
+        update: {},
+        create: {
+            id: 'SYNC_TEST',
+            name: '同步测试',
+            startupTicks: 10,
+            recoveryTicks: 5,
+            effectsJson: JSON.stringify([
+                { type: 'DAMAGE', targetSelector: 'PRIMARY', parameters: { resource: 'hp', amountExpr: '25' } },
+                { type: 'DAMAGE', targetSelector: 'PRIMARY', parameters: { resource: 'poise', amountExpr: '10' } }
+            ]),
+            tagsJson: JSON.stringify(['TEST', 'SYNC']),
+            resourceCostJson: JSON.stringify({ mp: '0' }),
+            rangeJson: JSON.stringify({ type: 'MELEE', distanceExpr: '5' }),
+            sustainResourcesJson: JSON.stringify([]),
+            priorityExpr: 'actor.str * 0.5 + 10'
+        }
+    });
+
     // 2. 播种角色数据
     await prisma.characterSheet.upsert({
         where: { id: 'actor_warrior' },

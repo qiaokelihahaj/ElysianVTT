@@ -129,14 +129,22 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         };
 
         // 广播时间轴数据
+        const moveActiveTicks: number[] = [];
+        let moveTick = evt.targetTick;
+        for (let i = 0; i < waypoints.length; i++) {
+            moveActiveTicks.push(moveTick + i * MOVE_INTERVAL_TICKS);
+        }
+        const moveEndTick = evt.targetTick + (waypoints.length - 1) * MOVE_INTERVAL_TICKS + 5;
         this.emit('ACTION_SCHEDULED', {
             entityId: actor.id,
             actionId: '__BUILTIN_MOVE__',
             actionName: 'Move',
             timeline: {
                 start: ct,
-                active: evt.targetTick,
-                end: evt.targetTick + (waypoints.length - 1) * MOVE_INTERVAL_TICKS + 5
+                startupEnd: evt.targetTick,
+                recoveryStart: moveActiveTicks[moveActiveTicks.length - 1] + 1,
+                end: moveEndTick,
+                pulseTicks: moveActiveTicks
             },
             tags: ['MOVEMENT']
         } as ActionScheduledPayload);
@@ -174,11 +182,17 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
 
         this.eventQueue.push(evt);
 
-        // 计算 channel 持续时长
-        let endTick = ct + startupTicks + 1 + recoveryTicks;
+        // 计算 channel 持续时长和脉冲节点
+        const activeTick = ct + startupTicks;
+        let endTick = activeTick + 1 + recoveryTicks;
+        const pulseTicks: number[] = [activeTick];
         if (template.channelOptions) {
             const pulses = template.channelOptions.maxPulses ?? 1;
-            endTick = ct + startupTicks + (pulses * (template.channelOptions.intervalTicks + 1)) + recoveryTicks;
+            const interval = template.channelOptions.intervalTicks;
+            for (let i = 1; i < pulses; i++) {
+                pulseTicks.push(activeTick + i * (interval + 1));  // +1 for the ACTIVE tick itself
+            }
+            endTick = activeTick + (pulses * (interval + 1)) + recoveryTicks;
         }
 
         actor.currentActionContext = {
@@ -197,8 +211,10 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             actionName: template.id,
             timeline: {
                 start: ct,
-                active: ct + startupTicks,
-                end: endTick
+                startupEnd: activeTick,
+                recoveryStart: pulseTicks[pulseTicks.length - 1] + 1,
+                end: endTick,
+                pulseTicks
             },
             tags: template.tags
         } as ActionScheduledPayload);
@@ -337,8 +353,9 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             const events = step.events.filter(e => e.status !== 'CANCELLED');
             if (events.length === 0) continue;
 
-            // 分离 ClashPool 候选
-            const clashCandidates = TickLoop.filterClashable(events);
+            // 分离 ClashPool 候选（仅 CAST_ACTION 事件参与判定，移动事件不冲突）
+            const clashCandidates = TickLoop.filterClashable(events)
+                .filter(e => e.actionTemplateId !== '__BUILTIN_MOVE__');
 
             if (clashCandidates.length >= 2) {
                 // ClashPool 批量结算
