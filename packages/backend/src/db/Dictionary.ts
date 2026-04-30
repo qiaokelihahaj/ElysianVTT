@@ -30,7 +30,11 @@ export class Dictionary {
                 // 使用安全解析，在数据缺失或损坏时提供默认值
                 tags:         safeParseArray(t.tagsJson ?? '', [], `tagsJson of ${t.id}`),
                 resourceCost: safeParseRecord(t.resourceCostJson ?? '', {}, `resourceCostJson of ${t.id}`),
-                range:        safeParse(t.rangeJson ?? '', { type: 'MELEE', distanceExpr: '1' }, `rangeJson of ${t.id}`)
+                range:        safeParse(t.rangeJson ?? '', { type: 'MELEE', distanceExpr: '1' }, `rangeJson of ${t.id}`),
+                priorityExpr: t.priorityExpr ?? undefined,
+                sustainResources: safeParseArray(t.sustainResourcesJson ?? '[]', [], `sustainResourcesJson of ${t.id}`),
+                channelOptions: safeParse(t.channelOptionsJson ?? '', undefined, `channelOptionsJson of ${t.id}`),
+                diceRules:    safeParseArray('[]', [], 'diceRules') as any
             });
         }
         logger.info(`📚 成功从数据库加载 ${this.actions.size} 个技能模板.`);

@@ -14,6 +14,9 @@ model ActionTemplate {
   startupTicks  Int              // 前摇
   recoveryTicks Int              // 后摇
   effectsJson   String           // 核心效果数组 (JSON格式存储 ActionEffectPayload[])
+  priorityExpr  String?          // 动态判定优先级公式 (ClashPool 用), 如 "actor.str + actor.reach * 2"
+  sustainResourcesJson String?   // STARTUP 阶段必须维持的资源列表 JSON, 如 ["poise"]
+  channelOptionsJson String?   // 持续引导/多段动作配置 JSON
   tagsJson         String? 
   resourceCostJson String?
   rangeJson        String? 

@@ -19,7 +19,33 @@ async function main() {
             ]),
             tagsJson: JSON.stringify(['ATTACK', 'MELEE', 'HEAVY']),
             resourceCostJson: JSON.stringify({ mp: '0' }),
-            rangeJson: JSON.stringify({ type: 'MELEE', distanceExpr: '1' })
+            rangeJson: JSON.stringify({ type: 'MELEE', distanceExpr: '1' }),
+            priorityExpr: 'actor.str + 10',
+            sustainResourcesJson: JSON.stringify(['poise'])
+        }
+    });
+
+    // 持续施法：火焰风暴 (3 段 AOE)
+    await prisma.actionTemplate.upsert({
+        where: { id: 'FIRE_STORM' },
+        update: {},
+        create: {
+            id: 'FIRE_STORM',
+            name: '火焰风暴',
+            startupTicks: 15,
+            recoveryTicks: 10,
+            effectsJson: JSON.stringify([
+                { type: 'DAMAGE', targetSelector: 'PRIMARY', parameters: { resource: 'hp', amountExpr: '10 + 2d6' } }
+            ]),
+            tagsJson: JSON.stringify(['SPELL', 'AOE', 'CHANNEL']),
+            resourceCostJson: JSON.stringify({ mp: '15' }),
+            rangeJson: JSON.stringify({ type: 'RANGED', distanceExpr: '8' }),
+            priorityExpr: 'actor.agi + 5',
+            sustainResourcesJson: JSON.stringify(['concentration', 'poise']),
+            channelOptionsJson: JSON.stringify({
+                intervalTicks: 8,
+                maxPulses: 3
+            })
         }
     });
 

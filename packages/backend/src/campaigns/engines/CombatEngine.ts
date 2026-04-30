@@ -5,11 +5,17 @@ import {
     TickEvent, ActionExecutionEvent, MovementStepEvent, StateMutationPayload, LogVisibility
 } from '@hard-vtt/shared';
 import { PriorityQueue } from '../../core/engine/PriorityQueue.js';
+import { ClashPool } from '../../core/engine/ClashPool.js';
+import type { ClashResult } from '../../core/engine/ClashPool.js';
 import { generateId } from '../../utils/IdGenerator.js';
 import { Dictionary } from '../../db/Dictionary.js';
 import { EffectSystem } from '../../core/systems/EffectSystem.js';
 import { SpatialSystem } from '../../core/systems/SpatialSystem.js';
+import { RuleEvaluator } from '../../core/systems/RuleEvaluator.js';
 import { Logger } from '../../utils/Logger.js';
+
+const MOVE_INTERVAL_TICKS = 10;  // 每步间隔
+const MOVE_STEP_SIZE = 1.0;       // 步长
 
 export class CombatEngine extends EventEmitter implements IEngineInstance {
     public engineId: string;
@@ -71,46 +77,54 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         }
     }
 
-    /**
-     * 处理移动意图：离散航点切分，压入最小堆
-     */
+    // ============================================================
+    //  移动：递归 Channel 模式
+    // ============================================================
+
     private handleMoveIntent(actor: Entity, targetCoords: { x: number; y: number; z: number }): void {
-        // 如果当前正在移动，取消旧的移动事件
         this.cancelCurrentAction(actor);
 
-        const moveEvents = SpatialSystem.planMovement(actor, targetCoords, this.currentTick);
+        const waypoints = SpatialSystem.planWaypoints(actor, targetCoords, MOVE_STEP_SIZE);
         
-        if (moveEvents.length === 0) {
+        if (waypoints.length === 0) {
             this.logger.warn(`${actor.id} 已在目标位置`, null, this.logCtx());
             return;
         }
 
         this.logger.game(
-            `🏃 [Move] Tick ${this.currentTick}: ${actor.id} 开始移动到 (${targetCoords.x.toFixed(1)}, ${targetCoords.y.toFixed(1)})，共 ${moveEvents.length} 步`,
+            `🏃 [Move] Tick ${this.currentTick}: ${actor.id} → (${targetCoords.x.toFixed(1)},${targetCoords.y.toFixed(1)}) 共 ${waypoints.length} 步`,
             null, LogVisibility.PLAYER, this.logCtx()
         );
 
-        // 压入所有移动事件
-        for (const evt of moveEvents) {
-            this.eventQueue.push(evt);
-        }
+        const evt: ActionExecutionEvent = {
+            eventId: generateId(),
+            eventType: 'ACTION_PHASE',
+            targetTick: this.currentTick + MOVE_INTERVAL_TICKS,
+            status: 'PENDING',
+            actorId: actor.id,
+            actionTemplateId: '__BUILTIN_MOVE__',
+            phase: 'STARTUP'
+        };
 
-        // 记录移动上下文（用于后续打断时批量取消）
-        const lastEvent = moveEvents[moveEvents.length - 1];
+        this.eventQueue.push(evt);
+
         actor.currentActionContext = {
             type: 'MOVING',
-            actionId: moveEvents[0].eventId,
+            actionId: evt.eventId,
             phase: 'STARTUP',
-            resolveTick: lastEvent.targetTick,
-            eventIds: moveEvents.map(e => e.eventId)
+            resolveTick: evt.targetTick,
+            pulseCount: 0,
+            waypoints,
+            currentWaypointIndex: 0
         };
 
         this.processQueue();
     }
 
-    /**
-     * 处理技能意图
-     */
+    // ============================================================
+    //  技能意图
+    // ============================================================
+
     private handleActionIntent(actor: Entity, intent: ClientIntent): void {
         const template = Dictionary.getAction(intent.payload.actionTemplateId!);
         if (!template) {
@@ -118,24 +132,13 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             return;
         }
 
-        // 如果当前正在移动，取消移动事件
-        if (actor.currentActionContext?.type === 'MOVING') {
-            this.cancelCurrentAction(actor);
-            this.logger.game(
-                `🛑 [Interrupt] Tick ${this.currentTick}: ${actor.id} 的移动被新动作打断`,
-                null, LogVisibility.PLAYER, this.logCtx()
-            );
-        }
+        this.cancelCurrentAction(actor);
 
-        if (actor.currentActionContext?.type === 'CASTING') {
-            this.logger.debug(`${actor.id}'s action interrupted by new action`, null, this.logCtx());
-            this.cancelCurrentAction(actor);
-        }
-
-        const startupEvent: ActionExecutionEvent = {
+        const startupTicks = template.timeCost.startupTicks;
+        const evt: ActionExecutionEvent = {
             eventId: generateId(),
             eventType: 'ACTION_PHASE',
-            targetTick: this.currentTick + template.timeCost.startupTicks,
+            targetTick: this.currentTick + startupTicks,
             status: 'PENDING',
             actorId: intent.actorId,
             targetIds: intent.payload.targetIds,
@@ -143,78 +146,226 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             phase: 'STARTUP'
         };
 
+        this.eventQueue.push(evt);
+
         actor.currentActionContext = {
             type: 'CASTING',
-            actionId: startupEvent.eventId,
+            actionId: evt.eventId,
+            actionTemplateId: template.id,
             phase: 'STARTUP',
-            resolveTick: startupEvent.targetTick
+            resolveTick: evt.targetTick,
+            pulseCount: 0
         };
 
-        this.eventQueue.push(startupEvent);
         this.processQueue();
     }
 
-    /**
-     * 取消实体当前正在执行的动作或移动
-     * 将相关事件标记为 CANCELLED（Tombstone 删除）
-     */
-    public cancelCurrentAction(actor: Entity): void {
-        const ctx = actor.currentActionContext;
-        if (!ctx) return;
+    // ============================================================
+    //  取消 / 打断
+    // ============================================================
 
-        // 取消队列中属于该上下文的所有事件
+    public cancelCurrentAction(actor: Entity): void {
+        // 标记该实体所有 PENDING 事件为 CANCELLED
         for (const event of (this.eventQueue as any).heap) {
             if (event.status !== 'PENDING') continue;
-
-            if (ctx.type === 'MOVING' && ctx.eventIds?.includes(event.eventId)) {
-                event.status = 'CANCELLED';
-            } else if (ctx.type === 'CASTING' && event.eventId === ctx.actionId) {
+            if ((event as ActionExecutionEvent).actorId === actor.id ||
+                (event as MovementStepEvent).actorId === actor.id) {
                 event.status = 'CANCELLED';
             }
-            // 也取消 RECOVERY 事件（来自同一 actionId 但 eventId 不同）
-            if (event.eventType === 'ACTION_PHASE') {
-                const actEvt = event as ActionExecutionEvent;
-                if (actEvt.actorId === actor.id && event.status === 'PENDING') {
-                    event.status = 'CANCELLED';
+        }
+        actor.currentActionContext = undefined;
+        this.logger.debug(`${actor.id} 动作/移动已取消`, null, this.logCtx());
+    }
+
+    private triggerInterrupt(entity: Entity): void {
+        const ctx = entity.currentActionContext;
+        if (!ctx || (ctx.phase !== 'STARTUP' && ctx.phase !== 'CHANNELING')) return;
+
+        const template = ctx.actionTemplateId ? Dictionary.getAction(ctx.actionTemplateId) : undefined;
+
+        this.cancelCurrentAction(entity);
+
+        // 清零依赖资源
+        if (template?.sustainResources) {
+            for (const resKey of template.sustainResources) {
+                if (entity.resources.current[resKey] !== undefined) {
+                    entity.resources.current[resKey] = 0;
+                    this.recordMutation(entity.id, { [`resources.current.${resKey}`]: 0 });
                 }
             }
         }
 
-        actor.currentActionContext = undefined;
-        this.logger.debug(`${actor.id} 的当前动作已取消`, null, this.logCtx());
+        this.emit('VISUAL_FX', {
+            tick: this.currentTick,
+            events: [{
+                eventId: generateId(),
+                eventType: 'INTERRUPTED',
+                sourceId: entity.id,
+                targetId: entity.id,
+                fxTemplateId: 'interrupted',
+                durationMs: 1200,
+                text: '💥 INTERRUPTED!'
+            }]
+        });
+
+        this.logger.game(
+            `💥 [Interrupt] Tick ${this.currentTick}: ${entity.id} 的 ${template?.id ?? 'action'} 被打断!`,
+            { entityId: entity.id, phase: ctx.phase },
+            LogVisibility.PLAYER, this.logCtx()
+        );
     }
 
-    /**
-     * 核心系统：处理事件队列（时间跃迁）
-     */
+    private checkSustainAfterMutations(mutatedEntityIds: EntityId[]): void {
+        for (const entityId of mutatedEntityIds) {
+            const entity = this.entities.get(entityId);
+            if (!entity) continue;
+
+            const ctx = entity.currentActionContext;
+            if (!ctx || (ctx.phase !== 'STARTUP' && ctx.phase !== 'CHANNELING')) continue;
+            if (ctx.type !== 'CASTING' && ctx.type !== 'MOVING') continue;
+
+            // 移动也检查 sustain（可通过后续配置控制）
+            const template = ctx.actionTemplateId ? Dictionary.getAction(ctx.actionTemplateId) : undefined;
+            const sustainResources = template?.sustainResources;
+
+            const hp = entity.resources.current['hp'] ?? 999;
+
+            let shouldInterrupt = false;
+
+            if (sustainResources && sustainResources.length > 0) {
+                for (const resKey of sustainResources) {
+                    if ((entity.resources.current[resKey] ?? 999) <= 0) {
+                        shouldInterrupt = true;
+                        break;
+                    }
+                }
+            }
+
+            if (hp <= 0) shouldInterrupt = true;
+
+            if (shouldInterrupt) {
+                this.triggerInterrupt(entity);
+            }
+        }
+    }
+
+    // ============================================================
+    //  核心队列处理
+    // ============================================================
+
     private processQueue(): void {
         while (this.eventQueue.size > 0) {
             const nextEvent = this.eventQueue.peek()!;
-            
+
             if (nextEvent.targetTick > this.currentTick && this.pendingMutations.mutations.length > 0) {
                 this.broadcastMutations();
             }
 
-            const event = this.eventQueue.pop()!;
-
-            // Tombstone: 丢弃被取消的事件
-            if (event.status === 'CANCELLED') {
-                continue;
-            }
-
-            // 时间跃迁
-            if (event.targetTick > this.currentTick) {
-                this.currentTick = event.targetTick;
-                this.pendingMutations.tick = this.currentTick;
-            }
+            const sameTickEvents = this.collectSameTickEvents();
             
-            this.resolveEvent(event);
+            const sameTickActiveEvents = sameTickEvents.filter(
+                e => (e as any).eventType === 'ACTION_PHASE' && (e as ActionExecutionEvent).phase === 'STARTUP'
+            );
+
+            if (sameTickActiveEvents.length >= 2) {
+                this.resolveClash(sameTickActiveEvents as ActionExecutionEvent[]);
+            } else {
+                const event = this.eventQueue.pop()!;
+                if (event.status === 'CANCELLED') continue;
+
+                if (event.targetTick > this.currentTick) {
+                    this.currentTick = event.targetTick;
+                    this.pendingMutations.tick = this.currentTick;
+                }
+
+                this.resolveSingleEvent(event);
+            }
         }
 
         this.broadcastMutations();
     }
 
-    private resolveEvent(event: TickEvent): void {
+    private collectSameTickEvents(): TickEvent[] {
+        const heap = (this.eventQueue as any).heap as TickEvent[];
+        if (heap.length === 0) return [];
+        const firstTick = heap[0].targetTick;
+        const collected: TickEvent[] = [];
+        for (const evt of heap) {
+            if (evt.targetTick === firstTick && evt.status === 'PENDING') {
+                collected.push(evt);
+            }
+        }
+        return collected;
+    }
+
+    private resolveClash(clashEvents: ActionExecutionEvent[]): void {
+        this.logger.game(
+            `⚡ [ClashPool] Tick ${this.currentTick}: ${clashEvents.length} 个事件冲突`,
+            null, LogVisibility.PLAYER, this.logCtx()
+        );
+
+        for (const ce of clashEvents) {
+            const popped = this.eventQueue.pop()!;
+            if (popped.status === 'CANCELLED') continue;
+        }
+
+        const clashTick = clashEvents[0].targetTick;
+        if (clashTick > this.currentTick) {
+            this.currentTick = clashTick;
+            this.pendingMutations.tick = this.currentTick;
+        }
+
+        const result: ClashResult = ClashPool.resolve(
+            clashEvents,
+            this.entities,
+            this.currentTick,
+            2.0,
+            (target) => this.cancelCurrentAction(target)
+        );
+
+        for (const mutation of result.mutations) {
+            this.recordMutation(mutation.entityId, mutation.changes);
+        }
+
+        const allMutatedIds = [...new Set(result.mutations.map(m => m.entityId))];
+        this.checkSustainAfterMutations(allMutatedIds);
+
+        for (const death of result.deaths) {
+            const entity = this.entities.get(death.entityId);
+            if (!entity) continue;
+            this.logger.game(
+                `💀 [Death] Tick ${this.currentTick}: ${death.entityId} 被击杀` +
+                (death.wasPoiseBreak ? ' (韧击破)' : ''),
+                null, LogVisibility.PLAYER, this.logCtx()
+            );
+            this.cancelCurrentAction(entity);
+            this.emit('ENTITY_DIED', entity);
+        }
+
+        for (const [idA, idB] of result.mutualKillPairs) {
+            this.emit('VISUAL_FX', {
+                tick: this.currentTick,
+                events: [{
+                    eventId: generateId(),
+                    eventType: 'MUTUAL_KILL',
+                    sourceId: idA,
+                    targetId: idB,
+                    fxTemplateId: 'mutual_kill',
+                    durationMs: 1500,
+                    text: '⚔️ 相杀!'
+                }]
+            });
+        }
+
+        // 为每个存活参与者处理后续（channel 或 recovery）
+        for (const ce of clashEvents) {
+            const actor = this.entities.get(ce.actorId);
+            if (!actor?.currentActionContext) continue;
+            this.pushNextPhase(actor, ce);
+        }
+    }
+
+    private resolveSingleEvent(event: TickEvent): void {
         if ((event as ActionExecutionEvent).eventType === 'ACTION_PHASE') {
             this.resolveActionEvent(event as ActionExecutionEvent);
         } else if ((event as MovementStepEvent).eventType === 'MOVEMENT_STEP') {
@@ -222,26 +373,74 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         }
     }
 
-    /**
-     * 结算移动步进事件
-     */
+    // ============================================================
+    //  MovementStep （保留兼容旧事件，但新移动不再使用）
+    // ============================================================
+
     private resolveMovementStep(moveEvt: MovementStepEvent): void {
         const actor = this.entities.get(moveEvt.actorId);
         if (!actor) return;
 
-        // 更新实体坐标
         actor.transform.coords.x = moveEvt.currentCoords.x;
         actor.transform.coords.y = moveEvt.currentCoords.y;
         actor.transform.coords.z = moveEvt.currentCoords.z;
 
-        // 记录差分
         this.recordMutation(actor.id, {
             'transform.coords.x': moveEvt.currentCoords.x,
             'transform.coords.y': moveEvt.currentCoords.y,
             'transform.coords.z': moveEvt.currentCoords.z
         });
 
-        // 派发视觉事件
+        if (moveEvt.isLastStep) {
+            actor.currentActionContext = undefined;
+            this.recordMutation(actor.id, { 'currentActionContext': null });
+        }
+    }
+
+    // ============================================================
+    //  核心：ActionEvent 结算 + 递归分叉
+    // ============================================================
+
+    private resolveActionEvent(actEvent: ActionExecutionEvent): void {
+        const actor = this.entities.get(actEvent.actorId);
+        if (!actor || actor.currentActionContext?.actionId !== actEvent.eventId) return;
+
+        // 分发：移动 or 技能
+        if (actor.currentActionContext.type === 'MOVING') {
+            this.resolveMovementPulse(actor, actEvent);
+        } else {
+            this.resolveActionPulse(actor, actEvent);
+        }
+    }
+
+    /**
+     * 移动脉冲：执行一个航点
+     */
+    private resolveMovementPulse(actor: Entity, actEvent: ActionExecutionEvent): void {
+        const ctx = actor.currentActionContext!;
+        const waypoints = ctx.waypoints;
+        const index = ctx.currentWaypointIndex ?? 0;
+
+        if (!waypoints || index >= waypoints.length) {
+            // 异常：直接结束
+            actor.currentActionContext = undefined;
+            this.recordMutation(actor.id, { 'currentActionContext': null });
+            return;
+        }
+
+        const wp = waypoints[index];
+
+        // 执行移动
+        actor.transform.coords.x = wp.x;
+        actor.transform.coords.y = wp.y;
+        actor.transform.coords.z = wp.z;
+
+        this.recordMutation(actor.id, {
+            'transform.coords.x': wp.x,
+            'transform.coords.y': wp.y,
+            'transform.coords.z': wp.z
+        });
+
         this.emit('VISUAL_FX', {
             tick: this.currentTick,
             events: [{
@@ -251,14 +450,22 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
                 targetId: actor.id,
                 fxTemplateId: 'info',
                 text: 'Step!',
-                durationMs: 500
+                durationMs: 400
             }]
         });
 
-        // 如果是最后一步，解除移动状态
-        if (moveEvt.isLastStep) {
+        ctx.pulseCount = (ctx.pulseCount ?? 0) + 1;
+
+        // 递归决定是否继续
+        const nextIndex = index + 1;
+        if (nextIndex < waypoints.length) {
+            // 还有航点 → 推下一脉冲
+            ctx.currentWaypointIndex = nextIndex;
+            this.pushNextPulse(actor, actEvent, MOVE_INTERVAL_TICKS);
+        } else {
+            // 到达终点 → RECOVERY
             this.logger.game(
-                `✅ [Move] Tick ${this.currentTick}: ${actor.id} 到达目标 (${moveEvt.targetCoords.x.toFixed(1)}, ${moveEvt.targetCoords.y.toFixed(1)})`,
+                `✅ [Move] Tick ${this.currentTick}: ${actor.id} 到达目的地`,
                 null, LogVisibility.PLAYER, this.logCtx()
             );
             actor.currentActionContext = undefined;
@@ -267,55 +474,136 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
     }
 
     /**
-     * 结算技能事件
+     * 技能脉冲（支持单段和 Channel 多段）
      */
-    private resolveActionEvent(actEvent: ActionExecutionEvent): void {
-        const actor = this.entities.get(actEvent.actorId);
-        if (!actor || actor.currentActionContext?.actionId !== actEvent.eventId) return;
-
+    private resolveActionPulse(actor: Entity, actEvent: ActionExecutionEvent): void {
+        const ctx = actor.currentActionContext!;
         const template = Dictionary.getAction(actEvent.actionTemplateId);
         if (!template) return;
 
-        const targets = (actEvent.targetIds || []).map(id => this.entities.get(id)).filter(e => e) as Entity[];
+        const targets = (actEvent.targetIds || [])
+            .map(id => this.entities.get(id))
+            .filter(e => e) as Entity[];
 
-        if (actEvent.phase === 'STARTUP') {
-            this.logger.game(
-                `⚔️ [Action] Tick ${this.currentTick}: ${actor.id} 执行了 ${template.id}!`,
-                null, LogVisibility.PLAYER, this.logCtx()
-            );
-            
-            const mutations = EffectSystem.applyAction(template, actor, targets, this.logCtx(), (target) => {
-                // INTERRUPT 回调：取消目标的当前动作
-                this.cancelCurrentAction(target);
-            });
-            
-            for (const [targetId, changes] of mutations.entries()) {
-                this.recordMutation(targetId, changes);
+        const pulseNum = (ctx.pulseCount ?? 0) + 1;
+
+        this.logger.game(
+            `⚔️ [Action] Tick ${this.currentTick}: ${actor.id}/${template.id} pulse#${pulseNum}`,
+            null, LogVisibility.PLAYER, this.logCtx()
+        );
+
+        // 执行效果
+        const mutations = EffectSystem.applyAction(template, actor, targets, this.logCtx(), (target) => {
+            this.cancelCurrentAction(target);
+        });
+
+        const affectedIds: EntityId[] = [];
+        for (const [targetId, changes] of mutations.entries()) {
+            this.recordMutation(targetId, changes);
+            affectedIds.push(targetId);
+        }
+
+        ctx.pulseCount = pulseNum;
+
+        // 检查 sustain
+        this.checkSustainAfterMutations([...affectedIds, actor.id]);
+
+        // === 递归分叉 ===
+        const channel = template.channelOptions;
+
+        if (channel && (!channel.maxPulses || pulseNum < channel.maxPulses)) {
+            // 消耗脉冲资源
+            if (channel.pulseResourceCost) {
+                for (const [resKey, expr] of Object.entries(channel.pulseResourceCost)) {
+                    const cost = Math.abs(RuleEvaluator.evaluate(expr, { actor }).total);
+                    if (cost > 0) {
+                        const cur = actor.resources.current[resKey] ?? 999;
+                        actor.resources.current[resKey] = Math.max(0, cur - cost);
+                        this.recordMutation(actor.id, { [`resources.current.${resKey}`]: actor.resources.current[resKey] });
+                    }
+                }
             }
 
-            const recoveryEvent: ActionExecutionEvent = {
-                ...actEvent,
-                eventId: generateId(),
-                targetTick: this.currentTick + template.timeCost.recoveryTicks,
-                phase: 'RECOVERY'
-            };
-            actor.currentActionContext = {
-                type: 'CASTING',
-                actionId: recoveryEvent.eventId,
-                phase: 'RECOVERY',
-                resolveTick: recoveryEvent.targetTick
-            };
-            this.eventQueue.push(recoveryEvent);
-        } 
-        else if (actEvent.phase === 'RECOVERY') {
+            // 推下一脉冲
+            this.pushNextPulse(actor, actEvent, channel.intervalTicks);
             this.logger.game(
-                `🛡️ [Action] Tick ${this.currentTick}: ${actor.id} 收招完成.`,
+                `⏳ [Channel] Tick ${this.currentTick}: ${actor.id} 进入引导等待 (pulse ${pulseNum}/${channel.maxPulses ?? '∞'})`,
                 null, LogVisibility.PLAYER, this.logCtx()
             );
-            actor.currentActionContext = undefined;
-            this.recordMutation(actor.id, { 'currentActionContext': null });
+        } else {
+            // 结束 → RECOVERY
+            this.pushRecovery(actor, actEvent, template);
         }
     }
+
+    /**
+     * 递归：推入下一次脉冲事件并设为 CHANNELING
+     */
+    private pushNextPulse(actor: Entity, prevEvent: ActionExecutionEvent, intervalTicks: number): void {
+        const newEvt: ActionExecutionEvent = {
+            ...prevEvent,
+            eventId: generateId(),
+            targetTick: this.currentTick + intervalTicks,
+            status: 'PENDING',
+            phase: 'STARTUP'
+        };
+
+        this.eventQueue.push(newEvt);
+
+        actor.currentActionContext = {
+            ...actor.currentActionContext!,
+            actionId: newEvt.eventId,
+            phase: 'CHANNELING',
+            resolveTick: newEvt.targetTick
+        };
+    }
+
+    /**
+     * 结束当前动作：推入 RECOVERY 事件
+     */
+    private pushRecovery(actor: Entity, prevEvent: ActionExecutionEvent, template: { timeCost: { recoveryTicks: number } }): void {
+        const recoveryEvt: ActionExecutionEvent = {
+            ...prevEvent,
+            eventId: generateId(),
+            targetTick: this.currentTick + template.timeCost.recoveryTicks,
+            status: 'PENDING',
+            phase: 'RECOVERY'
+        };
+
+        this.eventQueue.push(recoveryEvt);
+
+        actor.currentActionContext = {
+            ...actor.currentActionContext!,
+            actionId: recoveryEvt.eventId,
+            phase: 'RECOVERY',
+            resolveTick: recoveryEvt.targetTick
+        };
+    }
+
+    /**
+     * 后续阶段处理（用于 ClashPool 后的延续）
+     */
+    private pushNextPhase(actor: Entity, prevEvent: ActionExecutionEvent): void {
+        const template = Dictionary.getAction(prevEvent.actionTemplateId);
+        if (!template) {
+            actor.currentActionContext = undefined;
+            this.recordMutation(actor.id, { 'currentActionContext': null });
+            return;
+        }
+
+        const channel = template.channelOptions;
+        const pulseNum = (actor.currentActionContext?.pulseCount ?? 0);
+
+        if (channel && (!channel.maxPulses || pulseNum < channel.maxPulses)) {
+            this.pushNextPulse(actor, prevEvent, channel.intervalTicks);
+        } else {
+            this.pushRecovery(actor, prevEvent, template);
+        }
+    }
+
+    // ============================================================
+    //  工具方法
+    // ============================================================
 
     private recordMutation(entityId: EntityId, changes: Record<string, any>) {
         let mutation = this.pendingMutations.mutations.find(m => m.entityId === entityId);

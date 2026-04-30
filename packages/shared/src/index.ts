@@ -53,10 +53,14 @@ export interface Entity {
     // 状态机上下文：记录当前正在执行的长前摇动作或移动
     currentActionContext?: {
         type: 'CASTING' | 'MOVING';
-        actionId: string;                              // CASTING 时为 ActionExecutionEvent.eventId，MOVING 时为 movementEventGroupId
-        phase: 'STARTUP' | 'ACTIVE' | 'RECOVERY';
+        actionId: string;                              // 当前压入优先队列的事件 ID（每次推新事件时更新）
+        actionTemplateId?: string;                     // CASTING 时存储技能模板 ID，供 sustain 检测用
+        phase: 'STARTUP' | 'CHANNELING' | 'RECOVERY';
         resolveTick: number;
-        eventIds?: string[];                           // MOVING 时存储所有 MovementStepEvent.eventId，用于打断时批量取消
+        pulseCount?: number;                           // CHANNELING 时记录已执行的脉冲次数
+        eventIds?: string[];                           // [deprecated] 递归模式不再需要
+        waypoints?: Vector3D[];                        // MOVING 时存储所有航点坐标
+        currentWaypointIndex?: number;                 // MOVING 时当前已到达的航点索引
     };
 }
 
@@ -74,6 +78,13 @@ export interface ActionTemplate {
     range: { type: string; distanceExpr: ExpressionString; radiusExpr?: ExpressionString; };
     effects: ActionEffectPayload[];
     diceRules?: DiceRule[];
+    priorityExpr?: ExpressionString;  // 动态判定优先级公式（ClashPool 求值时用），如 "actor.agi + actor.reach * 2"
+    sustainResources?: string[];      // STARTUP 阶段必须维持 >0 的资源列表，如 ["poise"] 或 ["concentration"]
+    channelOptions?: {                // 持续引导/多段动作配置（递归调度模式）
+        intervalTicks: number;        // 每段判定之间的 Tick 间隔
+        maxPulses?: number;           // 最大触发次数（不填则无限，直到资源耗尽或手动取消）
+        pulseResourceCost?: Record<string, ExpressionString>;  // 每次脉冲额外消耗
+    };
 }
 
 export interface ActionEffectPayload {
@@ -207,7 +218,7 @@ export interface VisualEventPayload {
     tick: Tick;
     events: Array<{
         eventId: string;
-        eventType: 'FX_SPAWN' | 'ANIM_PLAY' | 'SOUND_PLAY' | 'UI_FLOATING_TEXT';
+        eventType: 'FX_SPAWN' | 'ANIM_PLAY' | 'SOUND_PLAY' | 'UI_FLOATING_TEXT' | 'MUTUAL_KILL' | 'INTERRUPTED';
         sourceId: EntityId;
         targetId?: EntityId;
         targetCoords?: Vector3D;

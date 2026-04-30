@@ -7,14 +7,27 @@ const DEFAULT_STEP_SIZE = 1.0;
 
 export class SpatialSystem {
     /**
-     * 将移动意图转化为离散的时间轴事件 (Discrete Waypoint Stepping)
-     * 
-     * @param actor         - 移动的实体
-     * @param targetCoords  - 目标坐标
-     * @param currentTick   - 当前引擎 Tick
-     * @param ticksPerUnit  - 每单位网格距离耗费的 Tick 数（可从实体配置读取）
-     * @param stepSize      - 每次步进的网格单位（默认 1 格）
-     * @returns 有序的 MovementStepEvent 数组，按 targetTick 升序
+     * 将移动意图转化为航点坐标列表（不生成事件，由 CombatEngine 递归调度）
+     */
+    public static planWaypoints(
+        actor: Entity,
+        targetCoords: Vector3D,
+        stepSize: number = DEFAULT_STEP_SIZE
+    ): Vector3D[] {
+        const waypoints: Vector3D[] = [];
+        const startCoords = { ...actor.transform.coords };
+        let cursor = { x: startCoords.x, y: startCoords.y, z: startCoords.z ?? 0 };
+
+        while (VectorMath.distance(cursor, targetCoords) > 0.01) {
+            cursor = VectorMath.stepTowards(cursor, targetCoords, stepSize);
+            waypoints.push({ x: cursor.x, y: cursor.y, z: cursor.z });
+        }
+
+        return waypoints;
+    }
+
+    /**
+     * 当前事件类型仍使用此方法生成 MovementStepEvent
      */
     public static planMovement(
         actor: Entity,

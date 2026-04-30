@@ -1,0 +1,59 @@
+问题ID,模块,优先级,问题描述,涉及文件,工作量(小时),是否为空文件,在哪些报告中出现
+CR-001,业务逻辑/战斗结算,🔴 CRITICAL,SettlementService 文件为空,packages/backend/src/campaigns/SettlementService.ts,12,是,CODE_REVIEW_COMPREHENSIVE.md|CODE_REVIEW_AGENT1_REPORT.md|CODE_REVIEW_AGENT2_REPORT.md
+CR-002,网络安全,🔴 CRITICAL,Socket 无玩家认证机制,packages/backend/src/network/SocketServer.ts,12,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md|CODE_REVIEW_AGENT1_REPORT.md|CODE_REVIEW_AGENT2_REPORT.md
+CR-003,网络安全,🔴 CRITICAL,SocketServer CORS 过于宽松,packages/backend/src/network/SocketServer.ts,2,否,CODE_REVIEW.md|CODE_REVIEW_QUICK_REFERENCE.md|CODE_REVIEW_AGENT1_REPORT.md
+CR-004,网络安全,🔴 CRITICAL,Socket 无权限检查,packages/backend/src/network/SocketServer.ts,3,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md|CODE_REVIEW_AGENT2_REPORT.md
+CR-005,后端核心引擎,🔴 CRITICAL,CombatEngine.processQueue() 实现不完整,packages/backend/src/campaigns/engines/CombatEngine.ts,8,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md|CODE_REVIEW_ISSUES_DETAILED.md|CODE_REVIEW_AGENT1_REPORT.md
+CR-006,后端核心引擎,🔴 CRITICAL,CombatEngine 缺少战斗结束逻辑,packages/backend/src/campaigns/engines/CombatEngine.ts,3,否,CODE_REVIEW.md|CODE_REVIEW_ISSUES_DETAILED.md
+CR-007,后端核心引擎,🔴 CRITICAL,CombatEngine 动作取消性能问题 O(n),packages/backend/src/campaigns/engines/CombatEngine.ts,5,否,CODE_REVIEW.md|CODE_REVIEW_ISSUES_DETAILED.md
+CR-008,后端核心引擎,🔴 CRITICAL,CombatEngine 缺少并发控制,packages/backend/src/campaigns/engines/CombatEngine.ts,4,否,CODE_REVIEW.md|CODE_REVIEW_ISSUES_DETAILED.md
+CR-009,网络/可见性系统,🔴 CRITICAL,VisibilityFilter 文件为空,packages/backend/src/network/VisibilityFilter.ts,8,是,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md|CODE_REVIEW_AGENT1_REPORT.md|CODE_REVIEW_AGENT2_REPORT.md
+CR-010,后端核心引擎/冲突系统,🔴 CRITICAL,ClashPool decorateEvents() 事件过滤过严,packages/backend/src/core/engine/ClashPool.ts,1,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md|CODE_REVIEW_ISSUES_DETAILED.md
+CR-011,后端核心引擎,🔴 CRITICAL,INTERACT意图处理缺失,packages/backend/src/campaigns/engines/CombatEngine.ts,2,否,CODE_REVIEW_AGENT2_REPORT.md
+HP-001,网络,🟡 HIGH,IntentRouter 文件为空,packages/backend/src/network/IntentRouter.ts,4,是,CODE_REVIEW.md|CODE_REVIEW_ISSUES_DETAILED.md|CODE_REVIEW_AGENT1_REPORT.md
+HP-002,网络,🟡 HIGH,StateBroadcaster 文件为空,packages/backend/src/network/StateBroadcaster.ts,3,是,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md|CODE_REVIEW_AGENT1_REPORT.md
+HP-003,数据库抽象层,🟡 HIGH,Repository 文件为空,packages/backend/src/db/Repository.ts,3,是,CODE_REVIEW_AGENT2_REPORT.md
+HP-004,业务逻辑,🟡 HIGH,CampaignManager 缺少引擎生命周期管理,packages/backend/src/campaigns/CampaignManager.ts,3,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md|CODE_REVIEW_AGENT1_REPORT.md|CODE_REVIEW_AGENT2_REPORT.md
+HP-005,业务逻辑,🟡 HIGH,CampaignManager 缺少SettlementService集成,packages/backend/src/campaigns/CampaignManager.ts,1,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md
+HP-006,网络,🟡 HIGH,Socket disconnect 处理不完整,packages/backend/src/network/SocketServer.ts,3,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md|CODE_REVIEW_ISSUES_DETAILED.md
+HP-007,后端核心引擎/冲突系统,🟡 HIGH,ClashPool tolerance 硬编码,packages/backend/src/core/engine/ClashPool.ts,1,否,CODE_REVIEW.md|CODE_REVIEW_ISSUES_DETAILED.md
+HP-008,后端核心引擎/冲突系统,🟡 HIGH,ClashPool 缺少死亡检查,packages/backend/src/core/engine/ClashPool.ts,2,否,CODE_REVIEW.md|CODE_REVIEW_ISSUES_DETAILED.md
+HP-009,后端核心引擎,🟡 HIGH,RuleEvaluator 缺少表达式编译缓存,packages/backend/src/core/systems/RuleEvaluator.ts,3,否,CODE_REVIEW.md|CODE_REVIEW_ISSUES_DETAILED.md
+HP-010,后端核心引擎,🟡 HIGH,EffectSystem APPLY_BUFF 未实现,packages/backend/src/core/systems/EffectSystem.ts,4,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md|CODE_REVIEW_ISSUES_DETAILED.md|CODE_REVIEW_AGENT2_REPORT.md
+HP-011,后端核心引擎,🟡 HIGH,EffectSystem 条件判定未使用,packages/backend/src/core/systems/EffectSystem.ts,2,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md|CODE_REVIEW_ISSUES_DETAILED.md|CODE_REVIEW_AGENT2_REPORT.md
+HP-012,后端核心引擎,🟡 HIGH,SpatialSystem 缺少碰撞检测,packages/backend/src/core/systems/SpatialSystem.ts,4,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md|CODE_REVIEW_ISSUES_DETAILED.md
+HP-013,后端核心引擎,🟡 HIGH,SpatialSystem 缺少寻路逻辑,packages/backend/src/core/systems/SpatialSystem.ts,5,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md|CODE_REVIEW_ISSUES_DETAILED.md
+HP-014,前端,🟡 HIGH,GameStore 缺少entityId验证,packages/frontend/src/store/gameStore.ts,1,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md
+HP-015,前端,🟡 HIGH,SocketClient 缺少自动重连,packages/frontend/src/network/socketClient.ts,3,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md
+HP-016,前端,🟡 HIGH,RendererManager 缺少性能优化(Culling),packages/frontend/src/canvas/RendererManager.ts,4,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md|CODE_REVIEW_AGENT1_REPORT.md
+HP-017,数据库,🟡 HIGH,数据库缺少关键表,packages/backend/prisma/schema.prisma,4,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md|CODE_REVIEW_AGENT1_REPORT.md
+HP-018,业务逻辑,🟡 HIGH,Scene 文件为空,packages/backend/src/campaigns/Scene.ts,2,是,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md|CODE_REVIEW_AGENT1_REPORT.md
+MP-001,后端核心引擎,🟢 MEDIUM,PriorityQueue 缺少堆序列化能力,packages/backend/src/core/engine/PriorityQueue.ts,2,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md|CODE_REVIEW_ISSUES_DETAILED.md
+MP-002,后端核心引擎,🟢 MEDIUM,PriorityQueue 没有 buildHeap() 快速初始化,packages/backend/src/core/engine/PriorityQueue.ts,2,否,CODE_REVIEW.md|CODE_REVIEW_ISSUES_DETAILED.md
+MP-003,后端核心引擎,🟢 MEDIUM,RuleEvaluator DICE_REGEX 不规范,packages/backend/src/core/systems/RuleEvaluator.ts,0.5,否,CODE_REVIEW.md|CODE_REVIEW_ISSUES_DETAILED.md
+MP-004,后端核心引擎,🟢 MEDIUM,RuleEvaluator 异常处理过于通用,packages/backend/src/core/systems/RuleEvaluator.ts,1,否,CODE_REVIEW.md|CODE_REVIEW_ISSUES_DETAILED.md
+MP-005,后端核心引擎,🟢 MEDIUM,RuleEvaluator 缺少递归深度限制,packages/backend/src/core/systems/RuleEvaluator.ts,2,否,CODE_REVIEW.md|CODE_REVIEW_ISSUES_DETAILED.md
+MP-006,后端核心引擎,🟢 MEDIUM,EffectSystem 缺少效果链支持,packages/backend/src/core/systems/EffectSystem.ts,3,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md|CODE_REVIEW_ISSUES_DETAILED.md
+MP-007,后端核心引擎,🟢 MEDIUM,SpatialSystem stepSize与游戏单位不对应,packages/backend/src/core/systems/SpatialSystem.ts,1,否,CODE_REVIEW.md|CODE_REVIEW_ISSUES_DETAILED.md
+MP-008,后端核心引擎,🟢 MEDIUM,CombatEngine currentTick 无上界,packages/backend/src/campaigns/engines/CombatEngine.ts,1,否,CODE_REVIEW.md|CODE_REVIEW_ISSUES_DETAILED.md
+MP-009,网络,🟢 MEDIUM,SocketServer 没有速率限制,packages/backend/src/network/SocketServer.ts,2,否,CODE_REVIEW.md|CODE_REVIEW_ISSUES_DETAILED.md
+MP-010,网络,🟢 MEDIUM,SocketServer CLIENT_INTENT 缺少错误回调,packages/backend/src/network/SocketServer.ts,1,否,CODE_REVIEW.md|CODE_REVIEW_ISSUES_DETAILED.md
+MP-011,前端,🟢 MEDIUM,GameStore 缺少乐观更新回滚,packages/frontend/src/store/gameStore.ts,3,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md|CODE_REVIEW_AGENT1_REPORT.md
+MP-012,前端,🟢 MEDIUM,GameStore movementTargets 字段用途不清,packages/frontend/src/store/gameStore.ts,1,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md
+MP-013,前端,🟢 MEDIUM,SocketClient 缺少连接状态查询,packages/frontend/src/network/socketClient.ts,1,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md|CODE_REVIEW_AGENT1_REPORT.md
+MP-014,前端,🟢 MEDIUM,SocketClient 缺少心跳检测,packages/frontend/src/network/socketClient.ts,1,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md
+MP-015,前端,🟢 MEDIUM,RendererManager 缺少摄像头系统,packages/frontend/src/canvas/RendererManager.ts,3,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md|CODE_REVIEW_AGENT1_REPORT.md
+MP-016,前端,🟢 MEDIUM,RendererManager 每帧更新所有实体,packages/frontend/src/canvas/RendererManager.ts,2,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md|CODE_REVIEW_AGENT1_REPORT.md
+MP-017,前端,🟢 MEDIUM,RendererManager Phantom逻辑欠缺,packages/frontend/src/canvas/RendererManager.ts,1,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md|CODE_REVIEW_AGENT1_REPORT.md
+MP-018,测试,🟢 MEDIUM,缺少集成测试,test/,4,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md|CODE_REVIEW_ISSUES_DETAILED.md|CODE_REVIEW_QUICK_REFERENCE.md
+MP-019,测试,🟢 MEDIUM,缺少并发和性能测试,test/,3,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md|CODE_REVIEW_ISSUES_DETAILED.md|CODE_REVIEW_QUICK_REFERENCE.md
+LP-001,后端核心引擎,🟣 LOW,ClashPool groupByPriority() 内存分配低效,packages/backend/src/core/engine/ClashPool.ts,1,否,CODE_REVIEW.md
+LP-002,后端核心引擎,🟣 LOW,EffectSystem 护盾等中间层缺失,packages/backend/src/core/systems/EffectSystem.ts,2,否,CODE_REVIEW.md|CODE_REVIEW_COMPREHENSIVE.md
+LP-003,后端核心引擎,🟣 LOW,PriorityQueue 缺少越界保护日志,packages/backend/src/core/engine/PriorityQueue.ts,0.5,否,CODE_REVIEW.md
+LP-004,前端,🟣 LOW,GameCanvas 缺少错误边界,packages/frontend/src/canvas/GameCanvas.tsx,1,否,CODE_REVIEW.md|CODE_REVIEW_AGENT1_REPORT.md
+LP-005,前端,🟣 LOW,GameCanvas 没有加载状态,packages/frontend/src/canvas/GameCanvas.tsx,1,否,CODE_REVIEW.md|CODE_REVIEW_AGENT1_REPORT.md
+LP-006,数据库,🟣 LOW,数据库缺少索引,packages/backend/prisma/schema.prisma,1,否,CODE_REVIEW.md|CODE_REVIEW_AGENT1_REPORT.md
+LP-007,数据库,🟣 LOW,数据库无JSON Schema验证,packages/backend/prisma/schema.prisma,2,否,CODE_REVIEW.md|CODE_REVIEW_AGENT1_REPORT.md
+LP-008,数据库,🟣 LOW,数据库缺少时间戳,packages/backend/prisma/schema.prisma,1,否,CODE_REVIEW.md|CODE_REVIEW_AGENT1_REPORT.md
+LP-009,网络,🟣 LOW,Socket 没有消息加密,packages/backend/src/network/SocketServer.ts,3,否,CODE_REVIEW.md
+LP-010,基础设施,🟣 LOW,Logger日志聚合缺失,packages/backend/src/utils/Logger.ts,2,否,CODE_REVIEW.md

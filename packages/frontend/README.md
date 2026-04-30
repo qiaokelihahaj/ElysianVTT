@@ -10,6 +10,23 @@
 *   **样式与组件**: Tailwind CSS 4 + shadcn/ui (Radix UI)
 *   **网络通信**: Socket.io Client
 
+## 🎨 资产系统
+
+前端已经引入轻量级资产系统，用于统一管理实体皮肤、视觉特效和后续扩展资源。
+
+### 当前能力
+
+*   `src/assets/assetCatalog.ts` 统一维护实体与特效的视觉映射。
+*   `src/assets/AssetManager.ts` 负责 Pixi 资源预加载与视觉定义解析。
+*   `RendererManager.ts` 会优先渲染资源图片，若资源未命中则自动回退到几何图形绘制。
+*   后端发来的 `fxTemplateId` 已经接入前端资产表，当前内置模板包括 `info`、`interrupted`、`mutual_kill`、`heal`、`damage`。
+
+### 资源约定
+
+*   实体资源放在 `public/assets/entities/`。
+*   视觉特效资源放在 `public/assets/fx/`。
+*   新增模板时，只需要在 `assetCatalog.ts` 中添加映射，并在 `public/assets/` 下补对应资源即可。
+
 ## 🏗 核心架构设计
 
 为了满足战术角色扮演游戏 (TRPG) 所需的频繁、深层状态变更与大量实体同屏的高性能渲染，我们在前端采用了**状态响应与命令式渲染相隔离**的设计模式。
@@ -21,7 +38,7 @@
 
 ### 2. 画布渲染层 (PixiJS + Command Pattern)
 针对战棋游戏的密集性能要求，我们故意放弃了使用 `@pixi/react` 这类声明式绑定，而是采取通过 `useRef` 获取 DOM Canvas，在外部使用原生的 `RendererManager.ts` 进行**命令式**（Imperative）托管。
-`RendererManager` 内部监听 Zustand 的部分状态；一旦发生实体坐标 (`transform.coords`) 变换等影响画面表现的变动，通过纯 TypeScript 直接操控 Sprite 属性。这样最大程度隔绝了因地图更新而导致的 React 大规模重渲染。
+`RendererManager` 内部监听 Zustand 的部分状态；一旦发生实体坐标 (`transform.coords`) 变换等影响画面表现的变动，通过纯 TypeScript 直接操控 Sprite 属性。当前渲染器已经接入资产目录：如果实体或特效存在可用图片资源，会优先使用 Sprite；否则自动回退到几何体绘制。这样最大程度隔绝了因地图更新而导致的 React 大规模重渲染。
 
 ### 3. 外围界面层 (React UI)
 血条、动作条等 HUD 层通过 React 与 Zustand 做绑定，覆盖在绝对定位的 `div` 上。采用了 `shadcn/ui` 元件加速开发。
@@ -36,7 +53,9 @@ HUD 的血条与所有操作按钮（施法、移动、交互）都基于当前�
 
 ```text
 src/
-├── assets/          # 静态资源 (图标、图片等)
+├── assets/          # 资产目录与预加载管理
+│   ├── assetCatalog.ts   # 实体 / 特效的视觉映射表
+│   └── AssetManager.ts   # Pixi 资源预加载与解析入口
 ├── canvas/          # WebGL 渲染核心
 │   ├── GameCanvas.tsx     # 承接 PixiAPP 的 React 桥接组件
 │   └── RendererManager.ts # PixiJS 原生命令式单例管理器
@@ -51,6 +70,11 @@ src/
 ├── App.tsx          # 前端根组件（容器编排）
 ├── index.css        # Tailwind 核心与全局样式
 └── main.tsx         # 挂载入口
+
+public/
+└── assets/
+    ├── entities/    # 实体 SVG 资源
+    └── fx/          # 视觉特效 SVG 资源
 ```
 
 ## 🚀 启动与开发
@@ -75,6 +99,7 @@ pnpm --filter @hard-vtt/frontend build
 - [x] 配置基于 Zustand 与 Immer 的深层补丁状态树
 - [x] （完成）在渲染层实现 `Tick` 状态间的**线性插值平滑移动（Interpolation）**
 - [x] （完成）`VISUAL_FX` 全局事件拦截器，渲染跳字（伤害/治疗文本）、技能光效
+- [x] （完成）前端资产系统骨架：统一资产目录、预加载管理、Sprite/几何体双路径渲染
 - [x] （完成）构建基于指令意图（`IntentDispatcher`）的前端交互指令发送模块
 - [x] （完成）基于选中态的实体点击与 HUD 信息绑定
 - [x] （完成）实体高亮显示（选中态视觉反馈）

@@ -1,4 +1,5 @@
-import { Application, Container, Graphics, Text, TextStyle } from 'pixi.js';
+import { Application, Container, Graphics, Sprite, Text, TextStyle } from 'pixi.js';
+import { assetManager } from '../assets';
 import { useGameStore } from '../store/gameStore';
 import type { VisualEventPayload } from '@hard-vtt/shared';
 
@@ -20,7 +21,7 @@ export class RendererManager {
     public previewLayer = new Container(); // For phantoms and indicators
 
     // References to sprites
-    private entitySprites: Map<string, Graphics> = new Map();
+    private entitySprites: Map<string, Graphics | Sprite> = new Map();
     private activeFloatingTexts: FloatingTextAnim[] = [];
     private phantomHero: Graphics | null = null;
 
@@ -38,6 +39,8 @@ export class RendererManager {
     public async initialize(viewConfig: { canvas: HTMLCanvasElement; width: number; height: number }) {
         if (this.app) return;
 
+        await assetManager.preload();
+
         this.app = new Application();
         await this.app.init({
             canvas: viewConfig.canvas,
@@ -48,44 +51,36 @@ export class RendererManager {
             autoDensity: true,
             resizeTo: window
         });
-
         // Add layers
         this.app.stage.addChild(this.mapLayer);
         this.app.stage.addChild(this.entityLayer);
         this.app.stage.addChild(this.previewLayer);
         this.app.stage.addChild(this.fxLayer);
 
-        // Make map layer interactive for moving
         this.mapLayer.eventMode = 'static';
         this.mapLayer.on('pointerdown', (e) => {
             const state = useGameStore.getState();
-            
+
             if (state.uiState.mode === 'SELECT_MOVE_TARGET') {
                 const targetPos = this.mapLayer.toLocal(e.global);
-                // Sets pending coordinate when clicking in map rather than dispatching right away
                 state.setPendingMoveCoords({ x: targetPos.x, y: targetPos.y, z: 0 });
             } else {
                 state.setSelectedEntityId(null);
             }
         });
 
-        // Initialize phantom
         this.phantomHero = new Graphics();
         this.phantomHero.circle(0, 0, 20);
         this.phantomHero.stroke({ width: 2, color: 0x3498db });
-        // facing indicator
         this.phantomHero.moveTo(0, 0);
         this.phantomHero.lineTo(20, 0);
         this.phantomHero.alpha = 0.5;
-        this.phantomHero.visible = false; // hidden initially
+        this.phantomHero.visible = false;
         this.previewLayer.addChild(this.phantomHero);
 
-        // Map layer temp grid
         this.drawGrid();
-
         this.subscribeToStore();
 
-        // Optional custom ticker to handle interpolation later
         this.app.ticker.add(() => {
             this.update(this.app!.ticker.deltaTime);
         });
@@ -130,9 +125,10 @@ export class RendererManager {
             // Sync entity creation and updates
             for (const [id, entity] of Object.entries(currentEntities)) {
                 let sprite = this.entitySprites.get(id);
+                const isSelected = state.selectedEntityId === id;
 
                 if (!sprite) {
-                    sprite = this.createPlaceholderEntity(entity.type, id);
+                    sprite = this.createEntityDisplay(entity.type, entity.templateId, id, isSelected);
                     // Initial snap for new entities
                     sprite.x = entity.transform.coords.x;
                     sprite.y = entity.transform.coords.y;
@@ -142,9 +138,7 @@ export class RendererManager {
                     this.entityLayer.addChild(sprite);
                 }
 
-                if (sprite instanceof Graphics) {
-                    this.redrawEntitySprite(sprite, entity.type, state.selectedEntityId === id);
-                }
+                this.syncEntityDisplay(sprite, entity.type, entity.templateId, isSelected);
             }
 
             // Sync UiState for Ghost Phantom
@@ -161,39 +155,86 @@ export class RendererManager {
         });
     }
 
-    private redrawEntitySprite(graphics: Graphics, type: string, isSelected: boolean) {
+    private redrawEntitySprite(graphics: Graphics, type: string, templateId: string, isSelected: boolean) {
+        const visual = assetManager.resolveEntityVisual(type as 'ACTOR' | 'PROP' | 'PROJECTILE', templateId);
         graphics.clear();
 
-        if (type === 'ACTOR') {
-            graphics.circle(0, 0, 20);
-            graphics.fill(isSelected ? 0xf4c542 : 0x3498db);
+        const fillColor = isSelected ? visual.geometry.selectedFill : visual.geometry.fill;
+        const strokeColor = isSelected ? visual.geometry.selectedStroke : visual.geometry.stroke;
+        const strokeWidth = isSelected ? visual.geometry.selectedStrokeWidth : visual.geometry.strokeWidth;
+
+        if (visual.geometry.shape === 'circle') {
+            graphics.circle(0, 0, visual.geometry.size / 2);
+            graphics.fill(fillColor);
             graphics.moveTo(0, 0);
-            graphics.lineTo(20, 0);
-            graphics.stroke({ width: isSelected ? 4 : 2, color: isSelected ? 0xf4c542 : 0xffffff });
-        } else if (type === 'PROP') {
-            graphics.rect(-15, -15, 30, 30);
-            graphics.fill(isSelected ? 0xf4c542 : 0x95a5a6);
-            graphics.stroke({ width: isSelected ? 4 : 2, color: isSelected ? 0xf4c542 : 0xffffff });
+            graphics.lineTo(visual.geometry.size / 2, 0);
+            graphics.stroke({ width: strokeWidth, color: strokeColor });
+        } else if (visual.geometry.shape === 'rect') {
+            graphics.rect(-visual.geometry.size / 2, -visual.geometry.size / 2, visual.geometry.size, visual.geometry.size);
+            graphics.fill(fillColor);
+            graphics.stroke({ width: strokeWidth, color: strokeColor });
         } else {
-            graphics.circle(0, 0, 5);
-            graphics.fill(isSelected ? 0xf4c542 : 0xe74c3c);
+            const halfSize = visual.geometry.size / 2;
+            graphics.poly([0, -halfSize, halfSize, 0, 0, halfSize, -halfSize, 0]);
+            graphics.fill(fillColor);
+            graphics.stroke({ width: strokeWidth, color: strokeColor });
         }
     }
 
-    private createPlaceholderEntity(type: string, id: string): Graphics {
-        const g = new Graphics();
-        this.redrawEntitySprite(g, type, false);
+    private createEntityDisplay(type: string, templateId: string, id: string, isSelected: boolean): Graphics | Sprite {
+        const visual = assetManager.resolveEntityVisual(type as 'ACTOR' | 'PROP' | 'PROJECTILE', templateId);
 
-        // Enable interaction with entities
-        g.eventMode = 'static';
-        g.cursor = 'pointer';
-        g.on('pointerdown', (e) => {
-            e.stopPropagation(); // 阻止事件冒泡到地图导致错误寻路
+        if (visual.imageUrl) {
+            const sprite = Sprite.from(visual.imageUrl);
+            sprite.anchor.set(0.5);
+            sprite.eventMode = 'static';
+            sprite.cursor = 'pointer';
+            sprite.on('pointerdown', (e) => {
+                e.stopPropagation();
+                useGameStore.getState().setSelectedEntityId(id);
+            });
+            this.syncEntitySpriteAppearance(sprite, visual, isSelected);
+            return sprite;
+        }
+
+        const graphics = new Graphics();
+        this.redrawEntitySprite(graphics, type, templateId, isSelected);
+
+        this.attachEntityInteraction(graphics, id);
+
+        return graphics;
+    }
+
+    private syncEntityDisplay(sprite: Graphics | Sprite, type: string, templateId: string, isSelected: boolean) {
+        if (sprite instanceof Sprite) {
+            const visual = assetManager.resolveEntityVisual(type as 'ACTOR' | 'PROP' | 'PROJECTILE', templateId);
+            this.syncEntitySpriteAppearance(sprite, visual, isSelected);
+            return;
+        }
+
+        this.redrawEntitySprite(sprite, type, templateId, isSelected);
+    }
+
+    private syncEntitySpriteAppearance(
+        sprite: Sprite,
+        visual: ReturnType<typeof assetManager.resolveEntityVisual>,
+        isSelected: boolean
+    ) {
+        sprite.tint = isSelected ? visual.geometry.selectedFill : visual.geometry.fill;
+        sprite.width = visual.geometry.size;
+        sprite.height = visual.geometry.size;
+        sprite.scale.set(isSelected ? 1.08 : 1);
+    }
+
+    private attachEntityInteraction(target: Graphics | Sprite, id: string) {
+        target.eventMode = 'static';
+        target.cursor = 'pointer';
+        target.on('pointerdown', (e) => {
+            e.stopPropagation();
 
             useGameStore.getState().setSelectedEntityId(id);
         });
 
-        return g;
     }
 
     private update(dt: number) {
@@ -285,6 +326,73 @@ export class RendererManager {
 
     public handleVisualFx(payload: VisualEventPayload) {
         payload.events.forEach(evt => {
+            const fxVisual = assetManager.resolveVisualFx(evt.fxTemplateId);
+
+            if (evt.eventType === 'MUTUAL_KILL') {
+                // 相杀特效：在两个实体位置之间产生武器碰撞效果
+                let startX = 0;
+                let startY = 0;
+
+                if (evt.sourceId) {
+                    const sourceSprite = this.entitySprites.get(evt.sourceId);
+                    if (sourceSprite) {
+                        startX = sourceSprite.x;
+                        startY = sourceSprite.y;
+                    }
+                }
+
+                this.spawnFloatingText(
+                    evt.text || '⚔️ Clash!', 
+                    startX, 
+                    startY - 30, 
+                    evt.durationMs || 2000,
+                    fxVisual.floatingTextColor
+                );
+
+                const flash = new Graphics();
+                flash.rect(0, 0, window.innerWidth, window.innerHeight);
+                flash.fill({ color: fxVisual.flashColor, alpha: 0.1 });
+                this.fxLayer.addChild(flash);
+                setTimeout(() => {
+                    this.fxLayer.removeChild(flash);
+                    flash.destroy();
+                }, 200);
+                return;
+            }
+
+            if (evt.eventType === 'INTERRUPTED') {
+                // 打断特效：紫色漂浮文字，屏幕边缘闪光
+                let startX = 0;
+                let startY = 0;
+
+                if (evt.sourceId) {
+                    const sourceSprite = this.entitySprites.get(evt.sourceId);
+                    if (sourceSprite) {
+                        startX = sourceSprite.x;
+                        startY = sourceSprite.y;
+                    }
+                }
+
+                this.spawnFloatingText(
+                    evt.text || '💥 INTERRUPTED!',
+                    startX,
+                    startY - 30,
+                    1500,
+                    0xcc44ff  // 紫色
+                );
+
+                // 边缘震动闪光
+                const flash = new Graphics();
+                flash.rect(0, 0, window.innerWidth, window.innerHeight);
+                flash.fill({ color: 0xcc33ff, alpha: 0.08 });
+                this.fxLayer.addChild(flash);
+                setTimeout(() => {
+                    this.fxLayer.removeChild(flash);
+                    flash.destroy();
+                }, 150);
+                return;
+            }
+
             if (evt.eventType === 'UI_FLOATING_TEXT' && evt.text) {
                 let startX = 0;
                 let startY = 0;
@@ -300,9 +408,7 @@ export class RendererManager {
                     startY = evt.targetCoords.y;
                 }
 
-                // If floating text starts with '+' or is 'heal' we color it green, else red
-                const isHeal = evt.text.startsWith('+') || evt.fxTemplateId === 'heal';
-                const color = isHeal ? 0x44ff44 : 0xff4444;
+                const color = fxVisual.floatingTextColor;
 
                 this.spawnFloatingText(evt.text, startX, startY, evt.durationMs || 1000, color);
             }
