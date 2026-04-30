@@ -1,70 +1,44 @@
 // packages/backend/src/campaigns/CampaignManager.ts
-import { Server } from 'socket.io';
 import { CombatEngine } from './engines/CombatEngine.js';
-import { SettlementService, type CombatEndPayload } from './SettlementService.js';
-import { prisma } from '../db/prisma.js';
-import { Entity } from '@hard-vtt/shared';
-import { safeParse } from '../utils/SafeJsonParser.js';
+import { CharacterSheetRepository } from '../db/CharacterSheetRepository.js';
+import { Scene, SceneState } from './Scene.js';
+import { StateBroadcaster } from '../network/StateBroadcaster.js';
 import { Logger } from '../utils/Logger.js';
+import type { Server } from 'socket.io';
 
 const logger = Logger.create('CampaignManager');
 
 export class CampaignManager {
-    // 内存中保存所有正在运行的场景/战斗引擎 (Key: sceneId)
-    private engines = new Map<string, Promise<CombatEngine>>();
-    private io: Server;
-    private settlementService = new SettlementService();
+    private scenes = new Map<string, Scene>();
+    private broadcaster: StateBroadcaster;
 
     constructor(io: Server) {
-        this.io = io;
+        this.broadcaster = new StateBroadcaster(io);
     }
 
-    /**
-     * 获取或创建一个场景的战斗引擎
-     */
-    public async getOrCreateEngine(sceneId: string): Promise<CombatEngine> {
-        if (this.engines.has(sceneId)) {
-            try {
-                return await this.engines.get(sceneId)!;
-            } catch {
-                this.engines.delete(sceneId);
-            }
+    getOrCreateScene(sceneId: string): Scene {
+        let scene = this.scenes.get(sceneId);
+        if (!scene || scene.currentState === SceneState.DESTROYED) {
+            scene = new Scene(sceneId);
+            this.scenes.set(sceneId, scene);
+            this.wireSceneEvents(scene);
+            logger.info(`Scene ${sceneId} registered`, { sceneId });
         }
-
-        const enginePromise = this.createEngine(sceneId);
-        this.engines.set(sceneId, enginePromise);
-
-        try {
-            return await enginePromise;
-        } catch (error) {
-            this.engines.delete(sceneId);
-            throw error;
-        }
+        return scene;
     }
 
-    private async createEngine(sceneId: string): Promise<CombatEngine> {
+    async getOrCreateEngine(sceneId: string): Promise<CombatEngine> {
+        const scene = this.getOrCreateScene(sceneId);
+
+        if (scene.currentState === SceneState.ACTIVE && scene.activeCombatEngine) {
+            return scene.activeCombatEngine;
+        }
+
+        await scene.startLoading();
+
         const newEngine = new CombatEngine(sceneId);
 
-        // --- 从数据库拉取参战实体 ---
-        const sheets = await prisma.characterSheet.findMany({
-            where: { currentSceneId: sceneId } // 👈 谁在这个房间就拉谁！
-        });
-
-        const DEFAULT_RESOURCES = { current: {}, max: {} };
-        const DEFAULT_TRANSFORM = { coords: { x: 0, y: 0, z: 0 }, planeId: sceneId, facing: 0 };
-        const DEFAULT_PHYSICS   = { scaleClass: 1, collisionRadius: 0.5, mass: 50, movementModes: ['WALK'] };
-
-        const entitiesToMount: Entity[] = sheets.map(sheet => {
-            return {
-                id: sheet.id,
-                templateId: sheet.id,
-                type: sheet.type as 'ACTOR' | 'PROP' | 'PROJECTILE',
-                resources: safeParse(sheet.resourcesJson, DEFAULT_RESOURCES, `resourcesJson of ${sheet.id}`),
-                transform: safeParse(sheet.transformJson, DEFAULT_TRANSFORM, `transformJson of ${sheet.id}`),
-                physics:   safeParse(sheet.physicsJson, DEFAULT_PHYSICS, `physicsJson of ${sheet.id}`),
-                activeEffects: []
-            };
-        });
+        const entitiesToMount = await CharacterSheetRepository.findBySceneId(sceneId);
 
         if (entitiesToMount.length > 0) {
             newEngine.mountEntities(entitiesToMount);
@@ -73,35 +47,46 @@ export class CampaignManager {
             logger.info(`Scene ${sceneId} is currently empty`, null, { sceneId });
         }
 
-        newEngine.on('STATE_MUTATED', (payload) => {
-            this.io.to(sceneId).emit('STATE_MUTATED', payload);
-        });
+        this.broadcaster.wireEngine(newEngine, sceneId);
 
-        // 接收引擎打出的视觉特效，直接转发给这个房间的所有前端
-        newEngine.on('VISUAL_FX', (payload) => {
-            this.io.to(sceneId).emit('VISUAL_FX', payload);
-        });
-
-        // 接收引擎打出的动作调度事件，转发给前端渲染时间轴
-        newEngine.on('ACTION_SCHEDULED', (payload) => {
-            this.io.to(sceneId).emit('ACTION_SCHEDULED', payload);
-        });
-
-        newEngine.on('COMBAT_END', (payload: CombatEndPayload) => {
-            void this.settlementService.settleCombat(payload)
-                .then(() => {
-                    this.io.to(sceneId).emit('COMBAT_END', payload);
-                })
-                .catch((error) => {
-                    logger.error(`Failed to settle combat for scene ${sceneId}`, error, { sceneId });
-                });
-        });
+        await scene.activate(newEngine);
 
         return newEngine;
     }
 
-    public async getEngine(sceneId: string): Promise<CombatEngine | undefined> {
-        const engine = this.engines.get(sceneId);
-        return engine ? await engine : undefined;
+    getScene(sceneId: string): Scene | undefined {
+        const scene = this.scenes.get(sceneId);
+        if (scene && scene.currentState === SceneState.DESTROYED) return undefined;
+        return scene;
+    }
+
+    async getEngine(sceneId: string): Promise<CombatEngine | undefined> {
+        const scene = this.getScene(sceneId);
+        return scene?.activeCombatEngine ?? undefined;
+    }
+
+    async destroyScene(sceneId: string): Promise<void> {
+        const scene = this.scenes.get(sceneId);
+        if (!scene) return;
+
+        await scene.destroy();
+        this.scenes.delete(sceneId);
+        CharacterSheetRepository.invalidateScene(sceneId);
+        logger.info(`Scene ${sceneId} removed from manager`, { sceneId });
+    }
+
+    getActiveSceneCount(): number {
+        let count = 0;
+        for (const scene of this.scenes.values()) {
+            if (scene.isActive()) count++;
+        }
+        return count;
+    }
+
+    private wireSceneEvents(scene: Scene): void {
+        scene.on('scene:idle_timeout', ({ sceneId }) => {
+            logger.info(`Auto-evicting idle scene ${sceneId}`, { sceneId });
+            void this.destroyScene(sceneId);
+        });
     }
 }

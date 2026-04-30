@@ -1,4 +1,5 @@
 import { LogLevel, LogVisibility, LogPayload } from '@hard-vtt/shared';
+import { EventBus, InternalEvent } from '../core/events/EventBus.js';
 
 export class Logger {
     private namespace: string;
@@ -64,8 +65,9 @@ export class Logger {
             console.dir(meta, { depth: 3, colors: true });
         }
 
-        // 2. 将来在这里触发 EventBus，把 GAME 级别的日志通过 Socket 转发给前端
-        // if (level === LogLevel.GAME) { EventBus.emit('GAME_LOG', payload); }
+        if (level === LogLevel.GAME) {
+            EventBus.emit(InternalEvent.GAME_LOG, { payload });
+        }
     }
 
     // 便捷方法
