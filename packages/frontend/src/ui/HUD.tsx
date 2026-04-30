@@ -1,9 +1,10 @@
 import React from 'react';
 import { useGameStore } from '../store/gameStore';
 import { IntentDispatcher } from '../network/IntentDispatcher';
+import { FrameMeter } from './components/FrameMeter';
+import { EntityList } from './components/EntityList';
 
 export const HUD: React.FC = () => {
-    // For now, we just subscribe to the first actor's component as an example
     const entities = useGameStore(state => state.entities);
     const tick = useGameStore(state => state.tick);
     const selectedEntityId = useGameStore(state => state.selectedEntityId);
@@ -15,7 +16,6 @@ export const HUD: React.FC = () => {
     const handleConfirmMove = () => {
         if (selectedEntity && uiState.pendingMoveCoords) {
             IntentDispatcher.dispatchMove(selectedEntity.id, uiState.pendingMoveCoords);
-            // 盲区推测：通知渲染器直接向目标点平滑动画
             useGameStore.getState().setMovementTarget(selectedEntity.id, uiState.pendingMoveCoords);
             resetUiState();
         }
@@ -47,6 +47,11 @@ export const HUD: React.FC = () => {
                                         {selectedEntity.resources.current.hp ?? 0} / {selectedEntity.resources.max.hp ?? 0} HP
                                     </div>
                                 </div>
+
+                                {/* FrameMeter for selected entity */}
+                                <div className="mt-3 pt-3 border-t border-zinc-800">
+                                    <FrameMeter entityId={selectedEntityId} />
+                                </div>
                             </div>
                         ) : (
                             <div className="mt-4 pt-4 border-t border-zinc-800 text-sm text-zinc-500">
@@ -57,6 +62,7 @@ export const HUD: React.FC = () => {
                 </div>
 
                 <div className="flex flex-col items-end gap-2">
+                    <EntityList />
                     <div className="bg-zinc-900/80 border border-zinc-800 py-2 px-4 rounded-lg pointer-events-auto text-sm text-zinc-300">
                         Status: Connected
                     </div>
@@ -94,11 +100,11 @@ export const HUD: React.FC = () => {
             <div className={`flex justify-center pb-4 ${uiState.mode !== 'IDLE' ? 'opacity-30 pointer-events-none' : ''}`}>
                 <div className="bg-zinc-900/90 border border-zinc-700 p-2 rounded-xl pointer-events-auto backdrop-blur-md flex gap-2">
                     <button 
-                        onClick={() => selectedEntity && IntentDispatcher.dispatchCastAction(selectedEntity.id, 'heroic_strike')}
+                        onClick={() => selectedEntity && IntentDispatcher.dispatchCastAction(selectedEntity.id, 'HEAVY_STRIKE')}
                         className="w-12 h-12 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-600 transition-colors flex items-center justify-center text-white font-bold group relative"
                     >
                         1
-                        <span className="absolute -top-8 bg-black/80 px-2 py-1 rounded text-xs opacity-0 group-hover:opacity-100 whitespace-nowrap">Heroic Strike</span>
+                        <span className="absolute -top-8 bg-black/80 px-2 py-1 rounded text-xs opacity-0 group-hover:opacity-100 whitespace-nowrap">Heavy Strike</span>
                     </button>
                     <button 
                         onClick={() => selectedEntity && setUiMode('SELECT_MOVE_TARGET')}
@@ -108,11 +114,11 @@ export const HUD: React.FC = () => {
                         <span className="absolute -top-8 bg-black/80 px-2 py-1 rounded text-xs opacity-0 group-hover:opacity-100 whitespace-nowrap text-white">Toggle Move Mode</span>
                     </button>
                     <button 
-                        onClick={() => selectedEntity && IntentDispatcher.dispatchInteract(selectedEntity.id, 'mock-chest-id')}
-                        className="w-12 h-12 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-600 transition-colors flex items-center justify-center text-white font-bold group relative"
+                        onClick={() => selectedEntity && IntentDispatcher.dispatchCastAction(selectedEntity.id, 'FIRE_STORM')}
+                        className="w-12 h-12 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-600 transition-colors flex items-center justify-center text-orange-400 font-bold group relative"
                     >
                         3
-                        <span className="absolute -top-8 bg-black/80 px-2 py-1 rounded text-xs opacity-0 group-hover:opacity-100 whitespace-nowrap">Interact</span>
+                        <span className="absolute -top-8 bg-black/80 px-2 py-1 rounded text-xs opacity-0 group-hover:opacity-100 whitespace-nowrap text-white">Fire Storm</span>
                     </button>
                 </div>
             </div>

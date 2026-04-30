@@ -4,23 +4,21 @@ import { socketClient } from './network/socketClient';
 import { useGameStore } from './store/gameStore';
 import { HUD } from './ui/HUD';
 
-// [MVP] 假设测试场景名
 const MOCK_SCENE_ID = 'room_1';
 
 function App() {
     useEffect(() => {
-        // Connect WS on mount
         socketClient.connect();
-
-        // 建立连接后立刻尝试加入场景
         socketClient.joinScene(MOCK_SCENE_ID);
 
-        // Subscribe to state mutation
         const handleMutation = (payload: any) => {
             useGameStore.getState().applyStateMutation(payload);
+            // 清理已完成的时间轴条
+            useGameStore.getState().clearExpiredActions(
+                useGameStore.getState().tick
+            );
         };
         
-        // Subscribe to visual fx
         const handleVisualFx = (payload: any) => {
             import('./canvas/RendererManager').then(({ RendererManager }) => {
                 RendererManager.getInstance().handleVisualFx(payload);
@@ -32,14 +30,21 @@ function App() {
             useGameStore.getState().setInitialScene(payload.entities, payload.tick);
         };
 
+        const handleActionScheduled = (payload: any) => {
+            console.log('[App] Action Scheduled:', payload);
+            useGameStore.getState().scheduleAction(payload);
+        };
+
         socketClient.onStateMutated(handleMutation);
         socketClient.onVisualFx(handleVisualFx);
         socketClient.onSceneSync(handleSceneSync);
+        socketClient.onActionScheduled(handleActionScheduled);
 
         return () => {
             socketClient.offStateMutated(handleMutation);
             socketClient.offVisualFx(handleVisualFx);
             socketClient.offSceneSync(handleSceneSync);
+            socketClient.offActionScheduled(handleActionScheduled);
             socketClient.disconnect();
         };
     }, []);

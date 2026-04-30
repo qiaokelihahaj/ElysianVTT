@@ -2,9 +2,11 @@
 import { EventEmitter } from 'events';
 import { 
     IEngineInstance, Tick, ClientIntent, Entity, EntityId, 
-    TickEvent, ActionExecutionEvent, MovementStepEvent, StateMutationPayload, LogVisibility
+    TickEvent, ActionExecutionEvent, MovementStepEvent, StateMutationPayload, 
+    ActionScheduledPayload, LogVisibility
 } from '@hard-vtt/shared';
 import { PriorityQueue } from '../../core/engine/PriorityQueue.js';
+import { TickLoop } from '../../core/engine/TickLoop.js';
 import { ClashPool } from '../../core/engine/ClashPool.js';
 import type { ClashResult } from '../../core/engine/ClashPool.js';
 import { generateId } from '../../utils/IdGenerator.js';
@@ -14,15 +16,16 @@ import { SpatialSystem } from '../../core/systems/SpatialSystem.js';
 import { RuleEvaluator } from '../../core/systems/RuleEvaluator.js';
 import { Logger } from '../../utils/Logger.js';
 
-const MOVE_INTERVAL_TICKS = 10;  // 每步间隔
-const MOVE_STEP_SIZE = 1.0;       // 步长
+const MOVE_INTERVAL_TICKS = 10;
+const MOVE_STEP_SIZE = 1.0;
 
 export class CombatEngine extends EventEmitter implements IEngineInstance {
     public engineId: string;
     public engineType: 'COMBAT' | 'EXPLORE' = 'COMBAT';
-    public currentTick: Tick = 0;
+    public get currentTick(): Tick { return this.tickLoop.getCurrentTick(); }
 
     private eventQueue = new PriorityQueue();
+    private tickLoop = new TickLoop(this.eventQueue);
     private entities = new Map<EntityId, Entity>();
     
     private pendingMutations: StateMutationPayload = { tick: 0, mutations: [] };
@@ -37,7 +40,7 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
     }
 
     private logCtx() {
-        return { tick: this.currentTick, sceneId: this.engineId };
+        return { tick: this.tickLoop.getCurrentTick(), sceneId: this.engineId };
     }
 
     public getAllEntities(): Entity[] {
@@ -78,7 +81,7 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
     }
 
     // ============================================================
-    //  移动：递归 Channel 模式
+    //  移动
     // ============================================================
 
     private handleMoveIntent(actor: Entity, targetCoords: { x: number; y: number; z: number }): void {
@@ -96,10 +99,11 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             null, LogVisibility.PLAYER, this.logCtx()
         );
 
+        const ct = this.currentTick;
         const evt: ActionExecutionEvent = {
             eventId: generateId(),
             eventType: 'ACTION_PHASE',
-            targetTick: this.currentTick + MOVE_INTERVAL_TICKS,
+            targetTick: ct + MOVE_INTERVAL_TICKS,
             status: 'PENDING',
             actorId: actor.id,
             actionTemplateId: '__BUILTIN_MOVE__',
@@ -118,6 +122,19 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             currentWaypointIndex: 0
         };
 
+        // 广播时间轴数据
+        this.emit('ACTION_SCHEDULED', {
+            entityId: actor.id,
+            actionId: '__BUILTIN_MOVE__',
+            actionName: 'Move',
+            timeline: {
+                start: ct,
+                active: evt.targetTick,
+                end: evt.targetTick + (waypoints.length - 1) * MOVE_INTERVAL_TICKS + 5
+            },
+            tags: ['MOVEMENT']
+        } as ActionScheduledPayload);
+
         this.processQueue();
     }
 
@@ -134,11 +151,14 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
 
         this.cancelCurrentAction(actor);
 
+        const ct = this.currentTick;
         const startupTicks = template.timeCost.startupTicks;
+        const recoveryTicks = template.timeCost.recoveryTicks;
+
         const evt: ActionExecutionEvent = {
             eventId: generateId(),
             eventType: 'ACTION_PHASE',
-            targetTick: this.currentTick + startupTicks,
+            targetTick: ct + startupTicks,
             status: 'PENDING',
             actorId: intent.actorId,
             targetIds: intent.payload.targetIds,
@@ -147,6 +167,13 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         };
 
         this.eventQueue.push(evt);
+
+        // 计算 channel 持续时长
+        let endTick = ct + startupTicks + 1 + recoveryTicks;
+        if (template.channelOptions) {
+            const pulses = template.channelOptions.maxPulses ?? 1;
+            endTick = ct + startupTicks + (pulses * (template.channelOptions.intervalTicks + 1)) + recoveryTicks;
+        }
 
         actor.currentActionContext = {
             type: 'CASTING',
@@ -157,6 +184,19 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             pulseCount: 0
         };
 
+        // 广播 ACTION_SCHEDULED
+        this.emit('ACTION_SCHEDULED', {
+            entityId: intent.actorId,
+            actionId: template.id,
+            actionName: template.id,
+            timeline: {
+                start: ct,
+                active: ct + startupTicks,
+                end: endTick
+            },
+            tags: template.tags
+        } as ActionScheduledPayload);
+
         this.processQueue();
     }
 
@@ -165,7 +205,6 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
     // ============================================================
 
     public cancelCurrentAction(actor: Entity): void {
-        // 标记该实体所有 PENDING 事件为 CANCELLED
         for (const event of (this.eventQueue as any).heap) {
             if (event.status !== 'PENDING') continue;
             if ((event as ActionExecutionEvent).actorId === actor.id ||
@@ -185,7 +224,6 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
 
         this.cancelCurrentAction(entity);
 
-        // 清零依赖资源
         if (template?.sustainResources) {
             for (const resKey of template.sustainResources) {
                 if (entity.resources.current[resKey] !== undefined) {
@@ -224,14 +262,12 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             if (!ctx || (ctx.phase !== 'STARTUP' && ctx.phase !== 'CHANNELING')) continue;
             if (ctx.type !== 'CASTING' && ctx.type !== 'MOVING') continue;
 
-            // 移动也检查 sustain（可通过后续配置控制）
             const template = ctx.actionTemplateId ? Dictionary.getAction(ctx.actionTemplateId) : undefined;
             const sustainResources = template?.sustainResources;
 
             const hp = entity.resources.current['hp'] ?? 999;
 
             let shouldInterrupt = false;
-
             if (sustainResources && sustainResources.length > 0) {
                 for (const resKey of sustainResources) {
                     if ((entity.resources.current[resKey] ?? 999) <= 0) {
@@ -240,7 +276,6 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
                     }
                 }
             }
-
             if (hp <= 0) shouldInterrupt = true;
 
             if (shouldInterrupt) {
@@ -250,52 +285,41 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
     }
 
     // ============================================================
-    //  核心队列处理
+    //  核心队列处理 — TickLoop 驱动
     // ============================================================
 
     private processQueue(): void {
-        while (this.eventQueue.size > 0) {
-            const nextEvent = this.eventQueue.peek()!;
-
-            if (nextEvent.targetTick > this.currentTick && this.pendingMutations.mutations.length > 0) {
+        while (!this.tickLoop.isEmpty()) {
+            // 广播上一轮的 accumulation
+            if (this.pendingMutations.mutations.length > 0) {
                 this.broadcastMutations();
             }
 
-            const sameTickEvents = this.collectSameTickEvents();
-            
-            const sameTickActiveEvents = sameTickEvents.filter(
-                e => (e as any).eventType === 'ACTION_PHASE' && (e as ActionExecutionEvent).phase === 'STARTUP'
-            );
+            const step = this.tickLoop.step()!;
+            this.pendingMutations.tick = step.tick;
 
-            if (sameTickActiveEvents.length >= 2) {
-                this.resolveClash(sameTickActiveEvents as ActionExecutionEvent[]);
-            } else {
-                const event = this.eventQueue.pop()!;
-                if (event.status === 'CANCELLED') continue;
+            const events = step.events.filter(e => e.status !== 'CANCELLED');
+            if (events.length === 0) continue;
 
-                if (event.targetTick > this.currentTick) {
-                    this.currentTick = event.targetTick;
-                    this.pendingMutations.tick = this.currentTick;
+            // 分离 ClashPool 候选
+            const clashCandidates = TickLoop.filterClashable(events);
+
+            if (clashCandidates.length >= 2) {
+                // ClashPool 批量结算
+                this.resolveClash(clashCandidates);
+                // 同 Tick 其他事件逐条处理
+                const others = events.filter(e => !clashCandidates.includes(e as any));
+                for (const e of others) {
+                    this.resolveSingleEvent(e);
                 }
-
-                this.resolveSingleEvent(event);
+            } else {
+                for (const e of events) {
+                    this.resolveSingleEvent(e);
+                }
             }
         }
 
         this.broadcastMutations();
-    }
-
-    private collectSameTickEvents(): TickEvent[] {
-        const heap = (this.eventQueue as any).heap as TickEvent[];
-        if (heap.length === 0) return [];
-        const firstTick = heap[0].targetTick;
-        const collected: TickEvent[] = [];
-        for (const evt of heap) {
-            if (evt.targetTick === firstTick && evt.status === 'PENDING') {
-                collected.push(evt);
-            }
-        }
-        return collected;
     }
 
     private resolveClash(clashEvents: ActionExecutionEvent[]): void {
@@ -303,17 +327,6 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             `⚡ [ClashPool] Tick ${this.currentTick}: ${clashEvents.length} 个事件冲突`,
             null, LogVisibility.PLAYER, this.logCtx()
         );
-
-        for (const ce of clashEvents) {
-            const popped = this.eventQueue.pop()!;
-            if (popped.status === 'CANCELLED') continue;
-        }
-
-        const clashTick = clashEvents[0].targetTick;
-        if (clashTick > this.currentTick) {
-            this.currentTick = clashTick;
-            this.pendingMutations.tick = this.currentTick;
-        }
 
         const result: ClashResult = ClashPool.resolve(
             clashEvents,
@@ -357,7 +370,6 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             });
         }
 
-        // 为每个存活参与者处理后续（channel 或 recovery）
         for (const ce of clashEvents) {
             const actor = this.entities.get(ce.actorId);
             if (!actor?.currentActionContext) continue;
@@ -374,7 +386,7 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
     }
 
     // ============================================================
-    //  MovementStep （保留兼容旧事件，但新移动不再使用）
+    //  MovementStep（兼容旧事件）
     // ============================================================
 
     private resolveMovementStep(moveEvt: MovementStepEvent): void {
@@ -398,14 +410,13 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
     }
 
     // ============================================================
-    //  核心：ActionEvent 结算 + 递归分叉
+    //  ActionEvent 结算 + 递归分叉
     // ============================================================
 
     private resolveActionEvent(actEvent: ActionExecutionEvent): void {
         const actor = this.entities.get(actEvent.actorId);
         if (!actor || actor.currentActionContext?.actionId !== actEvent.eventId) return;
 
-        // 分发：移动 or 技能
         if (actor.currentActionContext.type === 'MOVING') {
             this.resolveMovementPulse(actor, actEvent);
         } else {
@@ -413,24 +424,18 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         }
     }
 
-    /**
-     * 移动脉冲：执行一个航点
-     */
     private resolveMovementPulse(actor: Entity, actEvent: ActionExecutionEvent): void {
         const ctx = actor.currentActionContext!;
         const waypoints = ctx.waypoints;
         const index = ctx.currentWaypointIndex ?? 0;
 
         if (!waypoints || index >= waypoints.length) {
-            // 异常：直接结束
             actor.currentActionContext = undefined;
             this.recordMutation(actor.id, { 'currentActionContext': null });
             return;
         }
 
         const wp = waypoints[index];
-
-        // 执行移动
         actor.transform.coords.x = wp.x;
         actor.transform.coords.y = wp.y;
         actor.transform.coords.z = wp.z;
@@ -441,29 +446,13 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             'transform.coords.z': wp.z
         });
 
-        this.emit('VISUAL_FX', {
-            tick: this.currentTick,
-            events: [{
-                eventId: generateId(),
-                eventType: 'UI_FLOATING_TEXT',
-                sourceId: actor.id,
-                targetId: actor.id,
-                fxTemplateId: 'info',
-                text: 'Step!',
-                durationMs: 400
-            }]
-        });
-
         ctx.pulseCount = (ctx.pulseCount ?? 0) + 1;
 
-        // 递归决定是否继续
         const nextIndex = index + 1;
         if (nextIndex < waypoints.length) {
-            // 还有航点 → 推下一脉冲
             ctx.currentWaypointIndex = nextIndex;
             this.pushNextPulse(actor, actEvent, MOVE_INTERVAL_TICKS);
         } else {
-            // 到达终点 → RECOVERY
             this.logger.game(
                 `✅ [Move] Tick ${this.currentTick}: ${actor.id} 到达目的地`,
                 null, LogVisibility.PLAYER, this.logCtx()
@@ -473,9 +462,6 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         }
     }
 
-    /**
-     * 技能脉冲（支持单段和 Channel 多段）
-     */
     private resolveActionPulse(actor: Entity, actEvent: ActionExecutionEvent): void {
         const ctx = actor.currentActionContext!;
         const template = Dictionary.getAction(actEvent.actionTemplateId);
@@ -492,7 +478,6 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             null, LogVisibility.PLAYER, this.logCtx()
         );
 
-        // 执行效果
         const mutations = EffectSystem.applyAction(template, actor, targets, this.logCtx(), (target) => {
             this.cancelCurrentAction(target);
         });
@@ -504,15 +489,11 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         }
 
         ctx.pulseCount = pulseNum;
-
-        // 检查 sustain
         this.checkSustainAfterMutations([...affectedIds, actor.id]);
 
-        // === 递归分叉 ===
         const channel = template.channelOptions;
 
         if (channel && (!channel.maxPulses || pulseNum < channel.maxPulses)) {
-            // 消耗脉冲资源
             if (channel.pulseResourceCost) {
                 for (const [resKey, expr] of Object.entries(channel.pulseResourceCost)) {
                     const cost = Math.abs(RuleEvaluator.evaluate(expr, { actor }).total);
@@ -524,21 +505,16 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
                 }
             }
 
-            // 推下一脉冲
             this.pushNextPulse(actor, actEvent, channel.intervalTicks);
             this.logger.game(
-                `⏳ [Channel] Tick ${this.currentTick}: ${actor.id} 进入引导等待 (pulse ${pulseNum}/${channel.maxPulses ?? '∞'})`,
+                `⏳ [Channel] Tick ${this.currentTick}: ${actor.id} 引导等待 (pulse ${pulseNum}/${channel.maxPulses ?? '∞'})`,
                 null, LogVisibility.PLAYER, this.logCtx()
             );
         } else {
-            // 结束 → RECOVERY
             this.pushRecovery(actor, actEvent, template);
         }
     }
 
-    /**
-     * 递归：推入下一次脉冲事件并设为 CHANNELING
-     */
     private pushNextPulse(actor: Entity, prevEvent: ActionExecutionEvent, intervalTicks: number): void {
         const newEvt: ActionExecutionEvent = {
             ...prevEvent,
@@ -558,9 +534,6 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         };
     }
 
-    /**
-     * 结束当前动作：推入 RECOVERY 事件
-     */
     private pushRecovery(actor: Entity, prevEvent: ActionExecutionEvent, template: { timeCost: { recoveryTicks: number } }): void {
         const recoveryEvt: ActionExecutionEvent = {
             ...prevEvent,
@@ -580,9 +553,6 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         };
     }
 
-    /**
-     * 后续阶段处理（用于 ClashPool 后的延续）
-     */
     private pushNextPhase(actor: Entity, prevEvent: ActionExecutionEvent): void {
         const template = Dictionary.getAction(prevEvent.actionTemplateId);
         if (!template) {

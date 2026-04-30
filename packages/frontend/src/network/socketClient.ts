@@ -1,5 +1,5 @@
 import { io, Socket } from 'socket.io-client';
-import type { ClientIntent, StateMutationPayload, VisualEventPayload } from '@hard-vtt/shared';
+import type { ClientIntent, StateMutationPayload, VisualEventPayload, ActionScheduledPayload } from '@hard-vtt/shared';
 
 const SOCKET_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3000';
 
@@ -49,7 +49,6 @@ class SocketClient {
     public onStateMutated(callback: (payload: StateMutationPayload) => void) {
         this.socket.on('STATE_MUTATED', callback);
     }
-
     public offStateMutated(callback: (payload: StateMutationPayload) => void) {
         this.socket.off('STATE_MUTATED', callback);
     }
@@ -57,7 +56,6 @@ class SocketClient {
     public onVisualFx(callback: (payload: VisualEventPayload) => void) {
         this.socket.on('VISUAL_FX', callback);
     }
-
     public offVisualFx(callback: (payload: VisualEventPayload) => void) {
         this.socket.off('VISUAL_FX', callback);
     }
@@ -65,9 +63,15 @@ class SocketClient {
     public onSceneSync(callback: (payload: { tick: number, entities: import('@hard-vtt/shared').Entity[] }) => void) {
         this.socket.on('SCENE_SYNC', callback);
     }
-
     public offSceneSync(callback: (payload: { tick: number, entities: import('@hard-vtt/shared').Entity[] }) => void) {
         this.socket.off('SCENE_SYNC', callback);
+    }
+
+    public onActionScheduled(callback: (payload: ActionScheduledPayload) => void) {
+        this.socket.on('ACTION_SCHEDULED', callback);
+    }
+    public offActionScheduled(callback: (payload: ActionScheduledPayload) => void) {
+        this.socket.off('ACTION_SCHEDULED', callback);
     }
 }
 

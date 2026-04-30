@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
-import type { Entity, StateMutationPayload, Vector3D } from '@hard-vtt/shared';
+import type { Entity, StateMutationPayload, Vector3D, ActionScheduledPayload } from '@hard-vtt/shared';
 import { setNestedProperty } from '../utils/objectUtils';
 
 export interface UiState {
@@ -14,7 +14,8 @@ interface GameState {
     entities: Record<string, Entity>;
     selectedEntityId: string | null;
     uiState: UiState;
-    movementTargets: Record<string, Vector3D>;       // 本地移动目标（盲区推测用）
+    movementTargets: Record<string, Vector3D>;
+    scheduledActions: ActionScheduledPayload[];   // 时间轴渲染数据
     
     // Actions
     setInitialScene: (entities: Entity[], tick: number) => void;
@@ -32,6 +33,10 @@ interface GameState {
     // Movement Actions
     setMovementTarget: (entityId: string, coords: Vector3D) => void;
     clearMovementTarget: (entityId: string) => void;
+
+    // Timeline Actions
+    scheduleAction: (payload: ActionScheduledPayload) => void;
+    clearExpiredActions: (currentTick: number) => void;
 }
 
 export const useGameStore = create<GameState>()(
@@ -45,6 +50,7 @@ export const useGameStore = create<GameState>()(
                 activeActionId: null
             },
             movementTargets: {},
+            scheduledActions: [],
 
         setInitialScene: (entities, tick) => set((state) => {
             state.tick = tick;
@@ -105,6 +111,14 @@ export const useGameStore = create<GameState>()(
             }),
             clearMovementTarget: (entityId) => set((state) => {
                 delete state.movementTargets[entityId];
+            }),
+            scheduleAction: (payload) => set((state) => {
+                state.scheduledActions.push(payload);
+            }),
+            clearExpiredActions: (currentTick) => set((state) => {
+                state.scheduledActions = state.scheduledActions.filter(
+                    a => a.timeline.end > currentTick
+                );
             }),
         }))
 );

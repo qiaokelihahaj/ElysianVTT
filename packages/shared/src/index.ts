@@ -190,6 +190,7 @@ export interface IEngineInstance {
     on(event: 'STATE_MUTATED', listener: (diff: StateMutationPayload) => void): void;
     on(event: 'VISUAL_FX', listener: (fx: VisualEventPayload) => void): void;
     on(event: 'ENTITY_DIED', listener: (entity: Entity) => void): void;
+    on(event: 'ACTION_SCHEDULED', listener: (payload: ActionScheduledPayload) => void): void;
 }
 
 // ==========================================
@@ -226,4 +227,16 @@ export interface VisualEventPayload {
         durationMs?: number;
         text?: string;        
     }>;
+}
+
+export interface ActionScheduledPayload {
+    entityId: EntityId;
+    actionId: string;
+    actionName: string;
+    timeline: {
+        start: Tick;
+        active: Tick;
+        end: Tick;
+    };
+    tags?: string[];
 }

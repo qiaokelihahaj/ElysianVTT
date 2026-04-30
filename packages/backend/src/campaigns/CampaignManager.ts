@@ -80,6 +80,11 @@ export class CampaignManager {
             this.io.to(sceneId).emit('VISUAL_FX', payload);
         });
 
+        // 接收引擎打出的动作调度事件，转发给前端渲染时间轴
+        newEngine.on('ACTION_SCHEDULED', (payload) => {
+            this.io.to(sceneId).emit('ACTION_SCHEDULED', payload);
+        });
+
         return newEngine;
     }
 
