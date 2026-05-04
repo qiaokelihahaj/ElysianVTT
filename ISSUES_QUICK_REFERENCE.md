@@ -5,7 +5,21 @@
 
 ---
 
-## 🔴 Critical Issues 优先级排序 (34h 本周必须完成)
+## � 架构规划残留问题（延后处理）
+
+依据《权限系统架构与开发计划.md》，目前已经完成基于 RBAC 与基本 ABAC 动态授权的基础架构搭建。以下是剩余的高级特性，将于以后阶段进行解决：
+
+1. **底层审计表与骰子改值防篡改 (Audit & Dice Overrides)**:
+   - 虽然相关的 Prisma 表 (`AuditEvent`, `DiceRoll`) 已经预置，但在 `IntentRouter` 和底层操作中，并未强关联写入审计链。
+   - `OVERRIDE_DICE` 尚未开放对应路由与持久化实现。
+
+2. **特权通道与引擎生命周期控制 (Engine Lifecycle Control)**:
+   - 包含：暂停场景、开启场景、冻结引擎与恢复引擎。
+   - 目前受限于前端界面设计，这些管理功能暂无 API 和 Intent 入口。
+
+---
+
+## �🔴 Critical Issues 优先级排序 (34h 本周必须完成)
 
 ### 1️⃣ 最紧急: SocketServer 安全修复 (17h)
 ```

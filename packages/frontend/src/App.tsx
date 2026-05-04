@@ -5,9 +5,39 @@ import { useGameStore } from './store/gameStore';
 import { HUD } from './ui/HUD';
 
 const MOCK_SCENE_ID = 'room_1';
+const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3000';
+
+async function loadPermissionProfile() {
+    const token = localStorage.getItem('accessToken') ?? new URLSearchParams(window.location.search).get('token');
+
+    if (!token) {
+        useGameStore.getState().resetPermission();
+        return;
+    }
+
+    try {
+        const response = await fetch(`${SERVER_URL}/permissions/me?token=${encodeURIComponent(token)}`);
+        const data = await response.json();
+
+        if (!response.ok || !data?.ok) {
+            useGameStore.getState().resetPermission();
+            return;
+        }
+
+        useGameStore.getState().setPermission({
+            ...data.data,
+            source: 'server'
+        });
+    } catch (error) {
+        console.warn('[App] Failed to load permission profile:', error);
+        useGameStore.getState().resetPermission();
+    }
+}
 
 function App() {
     useEffect(() => {
+        void loadPermissionProfile();
+
         socketClient.connect();
         socketClient.joinScene(MOCK_SCENE_ID);
 

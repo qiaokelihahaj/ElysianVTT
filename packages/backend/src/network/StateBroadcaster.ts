@@ -73,4 +73,71 @@ export class StateBroadcaster {
             this.io.to(socketId).emit(event, payload);
         }
     }
+
+    /**
+     * 按权限角色分组广播
+     * 获取场景中的所有 Socket，按权限级别分组，然后分别广播
+     */
+    async broadcastToSceneGrouped(
+        sceneId: string,
+        event: string,
+        payload: any,
+        shouldFilter?: (role: 'GM' | 'PL' | 'OB', data: any) => any
+    ): Promise<void> {
+        try {
+            const sockets = await this.io.in(sceneId).fetchSockets();
+
+            // 按角色分组
+            const groups = {
+                GM: [] as any[],
+                PL: [] as any[],
+                OB: [] as any[]
+            };
+
+            for (const socket of sockets) {
+                const state = socket.data as any;
+                const role: 'GM' | 'PL' | 'OB' = state.role || 'OB'; // 默认为 OB
+                if (role === 'GM' || role === 'PL' || role === 'OB') {
+                    groups[role].push(socket.id);
+                }
+            }
+
+            // 针对每组分别广播
+            for (const role of ['GM', 'PL', 'OB'] as const) {
+                const socketIds = groups[role];
+                if (socketIds.length > 0) {
+                    const data = shouldFilter ? shouldFilter(role as 'GM' | 'PL' | 'OB', payload) : payload;
+                    for (const socketId of socketIds) {
+                        this.io.to(socketId).emit(event, data);
+                    }
+                }
+            }
+        } catch (error) {
+            logger.error(`Failed to broadcast grouped message to scene ${sceneId}`, error, { tick: Date.now(), sceneId });
+        }
+    }
+
+    /**
+     * 仅向特定权限角色广播
+     */
+    async broadcastToRoleInScene(
+        sceneId: string,
+        roles: ('GM' | 'PL' | 'OB')[],
+        event: string,
+        payload: any
+    ): Promise<void> {
+        try {
+            const sockets = await this.io.in(sceneId).fetchSockets();
+
+            for (const socket of sockets) {
+                const state = socket.data as any;
+                const role = state.role || 'OB';
+                if (roles.includes(role)) {
+                    socket.emit(event, payload);
+                }
+            }
+        } catch (error) {
+            logger.error(`Failed to broadcast to roles in scene ${sceneId}`, error, { tick: Date.now(), sceneId });
+        }
+    }
 }

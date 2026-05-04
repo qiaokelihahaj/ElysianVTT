@@ -3,6 +3,21 @@ import { immer } from 'zustand/middleware/immer';
 import type { Entity, StateMutationPayload, Vector3D, ActionScheduledPayload } from '@hard-vtt/shared';
 import { setNestedProperty } from '../utils/objectUtils';
 
+export type ViewerRole = 'GM' | 'PL' | 'OB';
+
+export interface PermissionProfile {
+    userId: string;
+    role: ViewerRole;
+    sessionId: string;
+    controlledEntityIds: string[];
+    visibleEntityIds: string[];
+    allowedSceneIds: string[];
+    capabilities: string[];
+    snapshotVersion: number;
+    expiresAt?: number;
+    source: 'server' | 'local' | 'anonymous';
+}
+
 export interface UiState {
     mode: 'IDLE' | 'SELECT_MOVE_TARGET' | 'SELECT_ACTION_TARGET';
     pendingMoveCoords: Vector3D | null;
@@ -16,6 +31,7 @@ interface GameState {
     uiState: UiState;
     movementTargets: Record<string, Vector3D>;
     scheduledActions: ActionScheduledPayload[];   // 时间轴渲染数据
+    permission: PermissionProfile;
     
     // Actions
     setInitialScene: (entities: Entity[], tick: number) => void;
@@ -34,6 +50,10 @@ interface GameState {
     setMovementTarget: (entityId: string, coords: Vector3D) => void;
     clearMovementTarget: (entityId: string) => void;
 
+    // Permission Actions
+    setPermission: (permission: PermissionProfile) => void;
+    resetPermission: () => void;
+
     // Timeline Actions
     scheduleAction: (payload: ActionScheduledPayload) => void;
     clearExpiredActions: (currentTick: number) => void;
@@ -51,6 +71,17 @@ export const useGameStore = create<GameState>()(
             },
             movementTargets: {},
             scheduledActions: [],
+            permission: {
+                userId: 'guest',
+                role: 'OB',
+                sessionId: 'anonymous',
+                controlledEntityIds: [],
+                visibleEntityIds: [],
+                allowedSceneIds: [],
+                capabilities: [],
+                snapshotVersion: 0,
+                source: 'anonymous'
+            },
 
         setInitialScene: (entities, tick) => set((state) => {
             state.tick = tick;
@@ -111,6 +142,22 @@ export const useGameStore = create<GameState>()(
             }),
             clearMovementTarget: (entityId) => set((state) => {
                 delete state.movementTargets[entityId];
+            }),
+            setPermission: (permission) => set((state) => {
+                state.permission = permission;
+            }),
+            resetPermission: () => set((state) => {
+                state.permission = {
+                    userId: 'guest',
+                    role: 'OB',
+                    sessionId: 'anonymous',
+                    controlledEntityIds: [],
+                    visibleEntityIds: [],
+                    allowedSceneIds: [],
+                    capabilities: [],
+                    snapshotVersion: 0,
+                    source: 'anonymous'
+                };
             }),
             scheduleAction: (payload) => set((state) => {
                 state.scheduledActions.push(payload);

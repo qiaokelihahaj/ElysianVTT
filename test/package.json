@@ -6,7 +6,8 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "test:unit": "tsx clashpool.test.ts && tsx interrupt.test.ts",
-    "test:integration": "tsx engine.integration.test.ts"
+    "test:integration": "tsx engine.integration.test.ts",
+    "test:security": "tsx security-suite.test.ts"
   },
   "keywords": [],
   "author": "",

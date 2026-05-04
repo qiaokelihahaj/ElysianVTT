@@ -32,3 +32,107 @@ model CharacterSheet {
   transformJson   String  // 包含坐标、朝向、所在平面
   physicsJson     String  // 包含碰撞半径、质量等
 }
+
+model User {
+  id           String   @id
+  displayName  String
+  loginName    String?  @unique
+  passwordHash String?
+  status       String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Role {
+  id          String   @id
+  code        String   @unique
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+}
+
+model Session {
+  id           String   @id
+  userId       String
+  tokenVersion Int      @default(0)
+  roleSnapshot String
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  ipAddress    String?
+  userAgent    String?
+  createdAt    DateTime @default(now())
+  lastSeenAt   DateTime?
+}
+
+model PermissionGrant {
+  id              String   @id
+  grantedByUserId String
+  grantedToUserId String
+  capability      String
+  scopeType       String
+  scopeId         String?
+  sceneId         String?
+  expiresAt       DateTime?
+  revokedAt       DateTime?
+  revokedByUserId String?
+  reason          String?
+  createdAt       DateTime @default(now())
+}
+
+model AuditEvent {
+  id          String   @id
+  actorUserId String
+  actorRole   String
+  eventType   String
+  subjectType String
+  subjectId   String
+  sceneId     String?
+  tick        Int?
+  beforeJson  String?
+  afterJson   String?
+  reason      String?
+  visibility  String
+  createdAt   DateTime @default(now())
+}
+
+model DiceRoll {
+  id                 String   @id
+  sceneId            String?
+  sourceEntityId     String?
+  rolledByUserId     String?
+  rollType           String
+  inputExpr          String
+  rawResultJson      String
+  finalResultJson    String
+  overrideType       String?
+  overriddenByUserId String?
+  overrideReason     String?
+  createdAt          DateTime @default(now())
+}
+
+model LogEntry {
+  id         String   @id
+  sceneId    String?
+  tick       Int?
+  namespace  String
+  level      String
+  visibility String
+  message    String
+  metaJson   String?
+  createdAt  DateTime @default(now())
+}
+
+model PermissionSnapshot {
+  id                      String   @id
+  sessionId               String
+  userId                  String
+  roleSnapshot            String
+  version                 Int
+  controllableEntitiesJson String
+  visibleEntitiesJson     String
+  capabilitiesJson        String
+  currentSceneIdsJson     String
+  issuedAt                DateTime @default(now())
+  expiresAt               DateTime?
+  refreshedAt             DateTime?
+}

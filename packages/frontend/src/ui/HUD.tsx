@@ -9,9 +9,16 @@ export const HUD: React.FC = () => {
     const tick = useGameStore(state => state.tick);
     const selectedEntityId = useGameStore(state => state.selectedEntityId);
     const uiState = useGameStore(state => state.uiState);
+    const permission = useGameStore(state => state.permission);
     const { setUiMode, resetUiState } = useGameStore.getState();
     
     const selectedEntity = selectedEntityId ? entities[selectedEntityId] : null;
+    const canAct = permission.role !== 'OB';
+    const roleBadgeClass = permission.role === 'GM'
+        ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+        : permission.role === 'PL'
+            ? 'bg-sky-500/15 text-sky-300 border-sky-500/30'
+            : 'bg-zinc-500/15 text-zinc-300 border-zinc-500/30';
 
     const handleConfirmMove = () => {
         if (selectedEntity && uiState.pendingMoveCoords) {
@@ -35,6 +42,10 @@ export const HUD: React.FC = () => {
                             <h2 className="text-lg font-bold text-white mb-1">ElysianVTT</h2>
                             <div className="text-xs text-zinc-400">
                                 Tick: <span className="text-amber-400 font-mono">{tick}</span>
+                            </div>
+                            <div className={`mt-2 inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.18em] ${roleBadgeClass}`}>
+                                <span>{permission.role}</span>
+                                <span className="text-[9px] opacity-70">{permission.source}</span>
                             </div>
                             
                             {selectedEntity ? (
@@ -101,7 +112,8 @@ export const HUD: React.FC = () => {
                     <div className="bg-zinc-900/90 border border-zinc-700 p-1.5 rounded-xl pointer-events-auto backdrop-blur-md flex gap-1.5">
                         <button 
                             onClick={() => selectedEntity && IntentDispatcher.dispatchCastAction(selectedEntity.id, 'HEAVY_STRIKE')}
-                            className="w-10 h-10 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-600 transition-colors flex items-center justify-center text-white text-sm font-bold group relative"
+                            disabled={!canAct}
+                            className="w-10 h-10 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-600 transition-colors flex items-center justify-center text-white text-sm font-bold group relative disabled:opacity-30 disabled:cursor-not-allowed"
                             title="Heavy Strike"
                         >
                             1
@@ -109,7 +121,8 @@ export const HUD: React.FC = () => {
                         </button>
                         <button 
                             onClick={() => selectedEntity && setUiMode('SELECT_MOVE_TARGET')}
-                            className="w-10 h-10 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-amber-600/50 transition-colors flex items-center justify-center text-amber-400 text-sm font-bold group relative"
+                            disabled={!canAct}
+                            className="w-10 h-10 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-amber-600/50 transition-colors flex items-center justify-center text-amber-400 text-sm font-bold group relative disabled:opacity-30 disabled:cursor-not-allowed"
                             title="Move"
                         >
                             2
@@ -117,7 +130,8 @@ export const HUD: React.FC = () => {
                         </button>
                         <button 
                             onClick={() => selectedEntity && IntentDispatcher.dispatchCastAction(selectedEntity.id, 'FIRE_STORM')}
-                            className="w-10 h-10 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-600 transition-colors flex items-center justify-center text-orange-400 text-sm font-bold group relative"
+                            disabled={!canAct}
+                            className="w-10 h-10 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-600 transition-colors flex items-center justify-center text-orange-400 text-sm font-bold group relative disabled:opacity-30 disabled:cursor-not-allowed"
                             title="Fire Storm"
                         >
                             3
@@ -125,13 +139,15 @@ export const HUD: React.FC = () => {
                         </button>
                         <button 
                             onClick={() => {
+                                if (!canAct || permission.role !== 'GM') return;
                                 const allActors = Object.entries(entities).filter(([_, e]) => e.type === 'ACTOR');
                                 const allIds = allActors.map(([id]) => id);
                                 allActors.forEach(([actorId]) => {
                                     IntentDispatcher.dispatchCastAction(actorId, 'SYNC_TEST', allIds.filter(id => id !== actorId));
                                 });
                             }}
-                            className="w-10 h-10 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-purple-500/30 transition-colors flex items-center justify-center text-purple-400 text-sm font-bold group relative"
+                            disabled={permission.role !== 'GM'}
+                            className="w-10 h-10 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-purple-500/30 transition-colors flex items-center justify-center text-purple-400 text-sm font-bold group relative disabled:opacity-30 disabled:cursor-not-allowed"
                             title="All actors cast SYNC_TEST simultaneously"
                         >
                             S
