@@ -68,8 +68,13 @@ ElysianVTT/
 │       └── src/
 │           ├── main.tsx     # React 入口
 │           └── App.tsx      # 根组件
-├── test/                    # 独立集成测试
-│   └── core.test.ts         # 战斗引擎集成测试
+├── test/                    # 独立集成测试（含测试套件 README）
+├── docs/                    # 📚 项目文档
+│   ├── README.md            # 文档总索引
+│   ├── PROJECT_OVERVIEW.md  # 项目概要（架构/模块/类型/数据库）
+│   ├── permissions/         # 权限系统设计文稿（架构/矩阵/接口/数据模型）
+│   ├── review/              # 代码审查报告与问题清单
+│   └── reports/             # 实现报告（权限修复/评审）
 ├── docker-compose.yml       # 容器编排
 ├── pnpm-workspace.yaml      # Monorepo 工作区定义
 ├── verify-env.js            # 环境健康检查脚本
@@ -192,6 +197,15 @@ pnpm --filter @hard-vtt/frontend build     # tsc -b && vite build
 | 阶段三 | 规划中 | 空间系统、弹道、射线检测、边界事件 |
 | 阶段四 | 规划中 | 完整效果系统（PUSH、INTERRUPT）、完整 Clash Pool、增强表达式 |
 | 阶段五 | 可选 | 脚本语言、DSL、MOD 支持 |
+
+---
+
+## 📚 文档
+
+完整文档见 [`docs/`](./docs/README.md)，包括：
+- 项目概要、权限系统设计、认证流程
+- 代码审查报告与问题清单
+- 实现报告
 
 ---
 
