@@ -18,7 +18,7 @@ async function main() {
                 { type: 'DAMAGE', targetSelector: 'PRIMARY', parameters: { resource: 'poise', amountExpr: '5' } }
             ]),
             tagsJson: JSON.stringify(['ATTACK', 'MELEE', 'HEAVY']),
-            resourceCostJson: JSON.stringify({ mp: '0' }),
+            resourceCostJson: JSON.stringify({ poise: '3', focus: '0' }),
             rangeJson: JSON.stringify({ type: 'MELEE', distanceExpr: '1' }),
             priorityExpr: 'actor.str + 10',
             sustainResourcesJson: JSON.stringify(['poise'])
@@ -38,7 +38,7 @@ async function main() {
                 { type: 'DAMAGE', targetSelector: 'PRIMARY', parameters: { resource: 'hp', amountExpr: '10 + 2d6' } }
             ]),
             tagsJson: JSON.stringify(['SPELL', 'AOE', 'CHANNEL']),
-            resourceCostJson: JSON.stringify({ mp: '15' }),
+            resourceCostJson: JSON.stringify({ poise: '0', focus: '10' }),
             rangeJson: JSON.stringify({ type: 'RANGED', distanceExpr: '8' }),
             priorityExpr: 'actor.agi + 5',
             sustainResourcesJson: JSON.stringify(['concentration', 'poise']),
@@ -80,8 +80,8 @@ async function main() {
             type: 'ACTOR',
             currentSceneId: 'room_1', // 👈 丢进 room_1
             resourcesJson: JSON.stringify({
-                current: { hp: 100, poise: 50, str: 15 },
-                max: { hp: 100, poise: 50, str: 15 }
+                current: { hp: 100, poise: 50, str: 15, focus: 20 },
+                max: { hp: 100, poise: 50, str: 15, focus: 20 }
             }),
             transformJson: JSON.stringify({
                 coords: { x: 0, y: 0, z: 0 },
@@ -104,8 +104,8 @@ async function main() {
             type: 'ACTOR',
             currentSceneId: 'room_1', // 👈 同样丢进 room_1
             resourcesJson: JSON.stringify({
-                current: { hp: 30, poise: 10 },
-                max: { hp: 30, poise: 10 }
+                current: { hp: 30, poise: 10, focus: 15 },
+                max: { hp: 30, poise: 10, focus: 15 }
             }),
             transformJson: JSON.stringify({
                 coords: { x: 0, y: 2, z: 0 }, // 👈 放在了距离为 2 的位置

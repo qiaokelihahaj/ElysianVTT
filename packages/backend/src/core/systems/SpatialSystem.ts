@@ -1,4 +1,4 @@
-import type { Entity, Vector3D, Tick, MovementStepEvent } from '@hard-vtt/shared';
+import type { Entity, HexCoord, Vector3D, Tick, MovementStepEvent } from '@hard-vtt/shared';
 import { VectorMath } from '../../utils/VectorMath.js';
 import { generateId } from '../../utils/IdGenerator.js';
 
@@ -76,5 +76,30 @@ export class SpatialSystem {
     public static movementCost(from: Vector3D, to: Vector3D, ticksPerUnit: number = DEFAULT_TICKS_PER_UNIT): Tick {
         const dist = VectorMath.distance(from, to);
         return Math.ceil(dist * ticksPerUnit);
+    }
+
+    /**
+     * 计算六边形网格距离 (轴向坐标)
+     * Uses axial coordinate hex distance formula from Red Blob Games
+     */
+    public static hexDistance(a: HexCoord, b: HexCoord): number {
+        const dq = a.q - b.q;
+        const dr = a.r - b.r;
+        const ds = a.q + a.r - b.q - b.r;
+        return Math.max(Math.abs(dq), Math.abs(dr), Math.abs(ds));
+    }
+
+    /**
+     * 获取六边形的六个邻居
+     */
+    public static hexNeighbors(coord: HexCoord): HexCoord[] {
+        const directions: [number, number][] = [
+            [1, 0], [0, 1], [-1, 1],
+            [-1, 0], [0, -1], [1, -1]
+        ];
+        return directions.map(([dq, dr]) => ({
+            q: coord.q + dq,
+            r: coord.r + dr
+        }));
     }
 }

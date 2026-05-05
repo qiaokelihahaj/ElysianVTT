@@ -9,6 +9,11 @@ export interface Vector3D {
     z: number; 
 }
 
+export interface HexCoord {
+    q: number;
+    r: number;
+}
+
 export interface Transform {
     coords: Vector3D;
     planeId: PlaneId;       
@@ -27,8 +32,10 @@ export interface PhysicsBody {
 // ==========================================
 export type EntityId = string;
 
+// ResourcePool 标准资源键: poise (PP/韧性) 和 focus (FP/专注)
+// 引擎层不硬编码具体资源语义，由数据模板定义
 export interface ResourcePool {
-    current: Record<string, number>; 
+    current: Record<string, number>;
     max: Record<string, number>;
 }
 
@@ -55,7 +62,7 @@ export interface Entity {
         type: 'CASTING' | 'MOVING';
         actionId: string;                              // 当前压入优先队列的事件 ID（每次推新事件时更新）
         actionTemplateId?: string;                     // CASTING 时存储技能模板 ID，供 sustain 检测用
-        phase: 'STARTUP' | 'CHANNELING' | 'RECOVERY';
+        phase: 'DELAY' | 'STARTUP' | 'ACTIVE' | 'CHANNELING' | 'RECOVERY';
         resolveTick: number;
         pulseCount?: number;                           // CHANNELING 时记录已执行的脉冲次数
         eventIds?: string[];                           // [deprecated] 递归模式不再需要
@@ -166,7 +173,7 @@ export interface ActionExecutionEvent extends TickEvent {
     actorId: EntityId;
     targetIds?: EntityId[];
     actionTemplateId: string;
-    phase: 'STARTUP' | 'ACTIVE' | 'RECOVERY';
+    phase: 'DELAY' | 'STARTUP' | 'ACTIVE' | 'RECOVERY';
 }
 
 export interface MovementStepEvent extends TickEvent {
@@ -198,12 +205,13 @@ export interface IEngineInstance {
 // ==========================================
 export interface ClientIntent {
     actorId: EntityId;
-    intentType: 'CAST_ACTION' | 'MOVE' | 'INTERACT';
+    intentType: 'CAST_ACTION' | 'MOVE' | 'INTERACT' | 'CANCEL_ACTION';
     clientTick: Tick; 
     payload: {
         actionTemplateId?: string;
         targetIds?: EntityId[];
         targetCoords?: Vector3D;
+        cancelSubType?: 'DELAY_CANCEL' | 'FORCE_CANCEL';
     };
 }
 

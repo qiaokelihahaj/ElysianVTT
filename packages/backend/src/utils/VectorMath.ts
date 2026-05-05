@@ -1,4 +1,4 @@
-import type { Vector3D } from '@hard-vtt/shared';
+import type { HexCoord, Vector3D } from '@hard-vtt/shared';
 
 export class VectorMath {
     public static distance(v1: Vector3D, v2: Vector3D): number {
@@ -61,5 +61,17 @@ export class VectorMath {
             y: v.y * scalar,
             z: (v.z ?? 0) * scalar
         };
+    }
+
+    public static hexToVector3D(hex: HexCoord, zOffset?: number): Vector3D {
+        const x = 3 / 2 * hex.q;
+        const y = Math.sqrt(3) / 2 * hex.q + Math.sqrt(3) * hex.r;
+        return { x, y, z: zOffset ?? 0 };
+    }
+
+    public static vector3DToHex(v3: Vector3D): HexCoord {
+        const q = Math.round((2 / 3 * v3.x) / 1);
+        const r = Math.round((-1 / 3 * v3.x + Math.sqrt(3) / 3 * v3.y) / 1);
+        return { q, r };
     }
 }

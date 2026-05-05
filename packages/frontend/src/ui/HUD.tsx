@@ -52,13 +52,20 @@ export const HUD: React.FC = () => {
                                 <div className="mt-2 pt-2 border-t border-zinc-800">
                                     <div className="flex items-center justify-between gap-2 mb-1">
                                         <div className="font-bold text-zinc-200 text-sm">{selectedEntity.templateId}</div>
-                                        <div className="text-[9px] uppercase tracking-[0.2em] text-amber-400">
-                                            Selected
+                                        <div className="flex items-center gap-2">
+                                            {selectedEntity.currentActionContext && (
+                                                <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                                                    {selectedEntity.currentActionContext.phase}
+                                                </span>
+                                            )}
+                                            <div className="text-[9px] uppercase tracking-[0.2em] text-amber-400">
+                                                Selected
+                                            </div>
                                         </div>
                                     </div>
                                     {/* HP bar */}
                                     <div className="h-3 bg-zinc-950 rounded overflow-hidden flex relative">
-                                        <div 
+                                        <div
                                             className="h-full bg-red-600 transition-all duration-300"
                                             style={{ width: `${((selectedEntity.resources.current.hp || 0) / (selectedEntity.resources.max.hp || 1)) * 100}%` }}
                                         />
@@ -66,6 +73,30 @@ export const HUD: React.FC = () => {
                                             {selectedEntity.resources.current.hp ?? 0} / {selectedEntity.resources.max.hp ?? 0}
                                         </div>
                                     </div>
+                                    {/* Poise (PP) bar */}
+                                    {selectedEntity.resources.current.poise !== undefined && (
+                                        <div className="h-2 bg-zinc-950 rounded overflow-hidden flex relative mt-1">
+                                            <div
+                                                className="h-full bg-amber-600 transition-all duration-300"
+                                                style={{ width: `${((selectedEntity.resources.current.poise || 0) / (selectedEntity.resources.max.poise || 1)) * 100}%` }}
+                                            />
+                                            <div className="absolute inset-0 flex items-center justify-center text-[8px] font-bold text-white">
+                                                PP {selectedEntity.resources.current.poise ?? 0}/{selectedEntity.resources.max.poise ?? 0}
+                                            </div>
+                                        </div>
+                                    )}
+                                    {/* Focus (FP) bar */}
+                                    {selectedEntity.resources.current.focus !== undefined && (
+                                        <div className="h-2 bg-zinc-950 rounded overflow-hidden flex relative mt-1">
+                                            <div
+                                                className="h-full bg-sky-600 transition-all duration-300"
+                                                style={{ width: `${((selectedEntity.resources.current.focus || 0) / (selectedEntity.resources.max.focus || 1)) * 100}%` }}
+                                            />
+                                            <div className="absolute inset-0 flex items-center justify-center text-[8px] font-bold text-white">
+                                                FP {selectedEntity.resources.current.focus ?? 0}/{selectedEntity.resources.max.focus ?? 0}
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             ) : (
                                 <div className="mt-2 pt-2 border-t border-zinc-800 text-xs text-zinc-500">
@@ -107,9 +138,13 @@ export const HUD: React.FC = () => {
                     </div>
                 )}
 
-                {/* Bottom: Action buttons */}
-                <div className={`flex justify-center pb-2 ${uiState.mode !== 'IDLE' ? 'opacity-30 pointer-events-none' : ''}`}>
-                    <div className="bg-zinc-900/90 border border-zinc-700 p-1.5 rounded-xl pointer-events-auto backdrop-blur-md flex gap-1.5">
+                {/* Bottom Tools */}
+                <div className="flex justify-between items-end pb-2">
+                    {/* Empty placeholder to keep center alignment */}
+                    <div className="w-10"></div>
+                    
+                    {/* Action buttons */}
+                    <div className={`bg-zinc-900/90 border border-zinc-700 p-1.5 rounded-xl pointer-events-auto backdrop-blur-md flex gap-1.5 ${uiState.mode !== 'IDLE' ? 'opacity-30 pointer-events-none' : ''}`}>
                         <button 
                             onClick={() => selectedEntity && IntentDispatcher.dispatchCastAction(selectedEntity.id, 'HEAVY_STRIKE')}
                             disabled={!canAct}
@@ -137,7 +172,7 @@ export const HUD: React.FC = () => {
                             3
                             <span className="absolute -top-7 bg-black/80 px-2 py-0.5 rounded text-[10px] opacity-0 group-hover:opacity-100 whitespace-nowrap text-white">Fire Storm</span>
                         </button>
-                        <button 
+                        <button
                             onClick={() => {
                                 if (!canAct || permission.role !== 'GM') return;
                                 const allActors = Object.entries(entities).filter(([_, e]) => e.type === 'ACTOR');
@@ -153,9 +188,48 @@ export const HUD: React.FC = () => {
                             S
                             <span className="absolute -top-7 bg-black/80 px-2 py-0.5 rounded text-[10px] opacity-0 group-hover:opacity-100 whitespace-nowrap text-white">Sync Test (All)</span>
                         </button>
+                        {/* Cancel action button — shown when selected entity is busy */}
+                        {selectedEntity?.currentActionContext && (
+                            <button
+                                onClick={() => IntentDispatcher.dispatchCancelAction(selectedEntity.id)}
+                                className="w-10 h-10 rounded-lg bg-red-900/50 hover:bg-red-800/70 border border-red-500/50 transition-colors flex items-center justify-center text-red-400 text-sm font-bold group relative"
+                                title="Cancel current action"
+                            >
+                                ✕
+                                <span className="absolute -top-7 bg-black/80 px-2 py-0.5 rounded text-[10px] opacity-0 group-hover:opacity-100 whitespace-nowrap text-white">Cancel</span>
+                            </button>
+                        )}
                     </div>
+
+                    {/* Camera Control */}
+                    <CameraControl />
                 </div>
             </div>
+        </div>
+    );
+};
+
+const CameraControl: React.FC = () => {
+    const cameraMode = useGameStore(state => state.cameraMode);
+    const { setCameraMode } = useGameStore.getState();
+
+    return (
+        <div className="pointer-events-auto">
+            <button
+                onClick={() => setCameraMode(!cameraMode)}
+                className={`flex items-center justify-center p-3 rounded-full transition-all shadow-lg ${
+                    cameraMode 
+                    ? 'bg-amber-600 text-white shadow-amber-600/30' 
+                    : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'
+                }`}
+                title={cameraMode ? 'Exit Camera Mode' : 'Enter Camera Mode'}
+            >
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinelinejoin="round">
+                    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+                    <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+                    <line x1="12" y1="22.08" x2="12" y2="12"></line>
+                </svg>
+            </button>
         </div>
     );
 };

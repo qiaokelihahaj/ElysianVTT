@@ -32,9 +32,10 @@ interface GameState {
     movementTargets: Record<string, Vector3D>;
     scheduledActions: ActionScheduledPayload[];   // 时间轴渲染数据
     permission: PermissionProfile;
+    cameraMode: boolean; // 相机拖拽和缩放状态
     
     // Actions
-    setInitialScene: (entities: Entity[], tick: number) => void;
+    setInitialScene: (entities: Entity[], tick: number, scheduledActions?: ActionScheduledPayload[]) => void;
     applyStateMutation: (payload: StateMutationPayload) => void;
     addEntity: (entity: Entity) => void;
     removeEntity: (entityId: string) => void;
@@ -45,6 +46,7 @@ interface GameState {
     setPendingMoveCoords: (coords: Vector3D | null) => void;
     setActiveActionId: (actionId: string | null) => void;
     resetUiState: () => void;
+    setCameraMode: (enable: boolean) => void;
 
     // Movement Actions
     setMovementTarget: (entityId: string, coords: Vector3D) => void;
@@ -69,6 +71,7 @@ export const useGameStore = create<GameState>()(
                 pendingMoveCoords: null,
                 activeActionId: null
             },
+            cameraMode: false,
             movementTargets: {},
             scheduledActions: [],
             permission: {
@@ -83,13 +86,16 @@ export const useGameStore = create<GameState>()(
                 source: 'anonymous'
             },
 
-        setInitialScene: (entities, tick) => set((state) => {
+        setInitialScene: (entities, tick, scheduledActions) => set((state) => {
             state.tick = tick;
             state.entities = {};
             state.selectedEntityId = null;
             entities.forEach((entity) => {
                 state.entities[entity.id] = entity;
             });
+            if (scheduledActions) {
+                state.scheduledActions = scheduledActions;
+            }
         }),
 
         applyStateMutation: (payload: StateMutationPayload) => set((state) => {
@@ -136,6 +142,9 @@ export const useGameStore = create<GameState>()(
                 state.uiState.mode = 'IDLE';
                 state.uiState.pendingMoveCoords = null;
                 state.uiState.activeActionId = null;
+            }),
+            setCameraMode: (enable) => set((state) => {
+                state.cameraMode = enable;
             }),
             setMovementTarget: (entityId, coords) => set((state) => {
                 state.movementTargets[entityId] = coords;

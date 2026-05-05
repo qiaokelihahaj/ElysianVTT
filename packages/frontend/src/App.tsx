@@ -4,60 +4,126 @@ import { socketClient } from './network/socketClient';
 import { useGameStore } from './store/gameStore';
 import { HUD } from './ui/HUD';
 
-const MOCK_SCENE_ID = 'room_1';
+const SCENE_ID = 'room_1';
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3000';
 
-async function loadPermissionProfile() {
-    const token = localStorage.getItem('accessToken') ?? new URLSearchParams(window.location.search).get('token');
-
-    if (!token) {
-        useGameStore.getState().resetPermission();
-        return;
+async function demoLogin(): Promise<string | null> {
+    try {
+        const response = await fetch(`${SERVER_URL}/auth/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId: 'demo_gm', role: 'GM' })
+        });
+        const data = await response.json();
+        if (data?.ok && data?.data?.accessToken) {
+            localStorage.setItem('accessToken', data.data.accessToken);
+            return data.data.accessToken;
+        }
+    } catch (error) {
+        console.warn('[App] Auto-login failed:', error);
     }
+    return null;
+}
 
+/** 获取已有 token (URL 参数 > localStorage) */
+function getStoredToken(): string | null {
+    return new URLSearchParams(window.location.search).get('token') ?? localStorage.getItem('accessToken');
+}
+
+/** 清除失效的 token */
+function clearStoredToken() {
+    localStorage.removeItem('accessToken');
+}
+
+/** 加载权限配置，返回是否成功 */
+async function loadPermissionProfile(token: string): Promise<boolean> {
     try {
         const response = await fetch(`${SERVER_URL}/permissions/me?token=${encodeURIComponent(token)}`);
+        if (response.status === 401) return false;
+
         const data = await response.json();
 
-        if (!response.ok || !data?.ok) {
-            useGameStore.getState().resetPermission();
-            return;
+        if (!data?.ok) {
+            return false;
         }
 
         useGameStore.getState().setPermission({
             ...data.data,
             source: 'server'
         });
+        return true;
     } catch (error) {
         console.warn('[App] Failed to load permission profile:', error);
-        useGameStore.getState().resetPermission();
+        return false;
     }
 }
 
 function App() {
     useEffect(() => {
-        void loadPermissionProfile();
+        (async () => {
+            // 尝试使用已有 token
+            let token = getStoredToken();
 
-        socketClient.connect();
-        socketClient.joinScene(MOCK_SCENE_ID);
+            // 若有 token 但权限查询失败（过期），清除并重新登录
+            if (token) {
+                const ok = await loadPermissionProfile(token);
+                if (!ok) {
+                    console.warn('[App] Stored token expired, re-logging in');
+                    clearStoredToken();
+                    token = null;
+                }
+            }
+
+            // 无 token 时自动登录
+            if (!token) {
+                token = await demoLogin();
+            }
+
+            if (!token) {
+                console.warn('[App] No auth token available, running in read-only mode');
+                socketClient.connect();
+                useGameStore.getState().resetPermission();
+                return;
+            }
+
+            // Full auth flow: WebSocket connect → AUTHENTICATE → JOIN_SCENE
+            socketClient.connect();
+
+            // WebSocket 认证失败时清除 token 并刷新页面
+            socketClient.onAuthFailed(() => {
+                console.warn('[App] WebSocket auth failed, clearing token and reloading');
+                clearStoredToken();
+                window.location.reload();
+            });
+
+            const doAuth = () => {
+                socketClient.authenticate(token);
+                socketClient.onAuthSuccess(() => {
+                    console.log('[App] WebSocket authenticated, joining scene:', SCENE_ID);
+                    socketClient.joinScene(SCENE_ID);
+                });
+            };
+
+            if (socketClient.connected) {
+                doAuth();
+            } else {
+                socketClient.onConnect(doAuth);
+            }
+        })();
 
         const handleMutation = (payload: any) => {
             useGameStore.getState().applyStateMutation(payload);
-            // 清理已完成的时间轴条
-            useGameStore.getState().clearExpiredActions(
-                useGameStore.getState().tick
-            );
         };
-        
+
         const handleVisualFx = (payload: any) => {
             import('./canvas/RendererManager').then(({ RendererManager }) => {
                 RendererManager.getInstance().handleVisualFx(payload);
             });
         };
 
-        const handleSceneSync = (payload: { tick: number, entities: any[] }) => {
+        const handleSceneSync = (payload: { tick: number, entities: any[], scheduledActions?: any[] }) => {
             console.log('[App] Received Scene Sync:', payload);
-            useGameStore.getState().setInitialScene(payload.entities, payload.tick);
+            useGameStore.getState().setInitialScene(payload.entities, payload.tick, payload.scheduledActions);
         };
 
         const handleActionScheduled = (payload: any) => {

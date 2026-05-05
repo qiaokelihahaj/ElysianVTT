@@ -111,6 +111,8 @@ export class IntentRouter {
                     return 'targetIds is required for INTERACT';
                 }
                 break;
+            case 'CANCEL_ACTION':
+                break;
             default:
                 return `Unknown intent type: ${intent.intentType}`;
         }

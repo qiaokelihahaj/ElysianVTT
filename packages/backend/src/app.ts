@@ -1,4 +1,5 @@
-﻿import express from 'express';
+﻿import cors from 'cors';
+import express from 'express';
 import { healthRouter } from './network/routes/index.js';
 import { AuthenticationService } from './auth/AuthenticationService.js';
 import { Logger } from './utils/Logger.js';
@@ -12,6 +13,10 @@ const logger = Logger.create('App');
 export function createApp(): express.Express {
     const app = express();
 
+    app.use(cors({
+        origin: ['http://localhost:5173', 'http://127.0.0.1:5173'],
+        credentials: true
+    }));
     app.use(express.json());
 
     app.use('/health', healthRouter);

@@ -5,6 +5,7 @@ const SOCKET_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3000';
 
 class SocketClient {
     private socket: Socket;
+    private _authFailedCallbacks: Array<(response: any) => void> = [];
 
     constructor() {
         this.socket = io(SOCKET_URL, {
@@ -25,6 +26,17 @@ class SocketClient {
         });
     }
 
+    public get connected(): boolean {
+        return this.socket.connected;
+    }
+
+    public onConnect(callback: () => void) {
+        this.socket.on('connect', callback);
+    }
+    public offConnect(callback: () => void) {
+        this.socket.off('connect', callback);
+    }
+
     public connect() {
         if (!this.socket.connected) {
             this.socket.connect();
@@ -37,13 +49,50 @@ class SocketClient {
         }
     }
 
+    public authenticate(token: string) {
+        this.socket.emit('AUTHENTICATE', { token }, (response: any) => {
+            if (response?.ok) {
+                console.log('[Socket] Authenticated successfully');
+                this.socket.emit('AUTH_SUCCESS', response);
+            } else {
+                console.error('[Socket] Authentication failed:', response?.message);
+                this._authFailedCallbacks.forEach(cb => cb(response));
+            }
+        });
+    }
+
     public joinScene(sceneId: string) {
         this.socket.emit('JOIN_SCENE', { sceneId });
         console.log(`[Socket] Requested to join scene: ${sceneId}`);
     }
 
+    public leaveScene() {
+        this.socket.emit('LEAVE_SCENE');
+    }
+
     public sendIntent(intent: ClientIntent) {
         this.socket.emit('CLIENT_INTENT', intent);
+    }
+
+    public onAuthSuccess(callback: (response: any) => void) {
+        this.socket.on('AUTH_SUCCESS', callback);
+    }
+    public offAuthSuccess(callback: (response: any) => void) {
+        this.socket.off('AUTH_SUCCESS', callback);
+    }
+
+    public onAuthFailed(callback: (response: any) => void) {
+        this._authFailedCallbacks.push(callback);
+    }
+    public offAuthFailed(callback: (response: any) => void) {
+        this._authFailedCallbacks = this._authFailedCallbacks.filter(cb => cb !== callback);
+    }
+
+    public onJoinSuccess(callback: (response: any) => void) {
+        this.socket.on('JOIN_SUCCESS', callback);
+    }
+    public offJoinSuccess(callback: (response: any) => void) {
+        this.socket.off('JOIN_SUCCESS', callback);
     }
 
     public onStateMutated(callback: (payload: StateMutationPayload) => void) {

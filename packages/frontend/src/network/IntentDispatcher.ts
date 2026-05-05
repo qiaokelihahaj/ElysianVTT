@@ -56,4 +56,16 @@ export class IntentDispatcher {
         socketClient.sendIntent(intent);
         console.log('[IntentDispatcher] 发送交互意图 (INTERACT):', intent);
     }
+
+    /**
+     * 分取消指令
+     */
+    public static dispatchCancelAction(actorId: EntityId) {
+        const intent: ClientIntent = {
+            ...this.createBaseIntent(actorId, 'CANCEL_ACTION'),
+            payload: {}
+        };
+        socketClient.sendIntent(intent);
+        console.log('[IntentDispatcher] 发送取消意图 (CANCEL_ACTION):', intent);
+    }
 }

@@ -6,7 +6,7 @@ export class EventFactory {
         actorId: EntityId;
         actionTemplateId: string;
         targetTick: Tick;
-        phase: 'STARTUP' | 'ACTIVE' | 'RECOVERY';
+        phase: 'DELAY' | 'STARTUP' | 'ACTIVE' | 'RECOVERY';
         targetIds?: EntityId[];
     }): ActionExecutionEvent {
         return {

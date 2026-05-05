@@ -18,6 +18,7 @@ import { Logger } from '../../utils/Logger.js';
 
 const MOVE_INTERVAL_TICKS = 10;
 const MOVE_STEP_SIZE = 1.0;
+const MOVE_RECOVERY_TICKS = 5;
 
 export class CombatEngine extends EventEmitter implements IEngineInstance {
     public engineId: string;
@@ -183,16 +184,19 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         this.eventQueue.push(evt);
 
         // 计算 channel 持续时长和脉冲节点
+        // 引擎行为：第一个脉冲在 activeTick，之后每 intervalTicks 一个脉冲
+        // pushRecovery 在最后一个脉冲 tick + recoveryTicks 触发
         const activeTick = ct + startupTicks;
-        let endTick = activeTick + 1 + recoveryTicks;
+        let endTick = activeTick + recoveryTicks;
         const pulseTicks: number[] = [activeTick];
         if (template.channelOptions) {
             const pulses = template.channelOptions.maxPulses ?? 1;
             const interval = template.channelOptions.intervalTicks;
             for (let i = 1; i < pulses; i++) {
-                pulseTicks.push(activeTick + i * (interval + 1));  // +1 for the ACTIVE tick itself
+                pulseTicks.push(activeTick + i * interval);
             }
-            endTick = activeTick + (pulses * (interval + 1)) + recoveryTicks;
+            const lastPulseTick = activeTick + (pulses - 1) * interval;
+            endTick = lastPulseTick + recoveryTicks;
         }
 
         actor.currentActionContext = {
@@ -341,7 +345,7 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
     // ============================================================
 
     private processQueue(): void {
-        while (!this.tickLoop.isEmpty() && !this.combatEnded) {
+        while (!this.tickLoop.isEmpty()) {
             // 广播上一轮的 accumulation
             if (this.pendingMutations.mutations.length > 0) {
                 this.broadcastMutations();
@@ -371,12 +375,13 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
                 }
             }
 
-            if (this.checkAndEndCombat()) {
-                break;
-            }
+            // 不在此处判定战斗结束 — 让队列排空后再判定
         }
 
         this.broadcastMutations();
+
+        // 所有事件处理完毕，检查战斗是否应该结束
+        this.checkAndEndCombat();
     }
 
     private resolveClash(clashEvents: ActionExecutionEvent[]): void {
@@ -516,11 +521,24 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             this.pushNextPulse(actor, actEvent, MOVE_INTERVAL_TICKS);
         } else {
             this.logger.game(
-                `✅ [Move] Tick ${this.currentTick}: ${actor.id} 到达目的地`,
+                `✅ [Move] Tick ${this.currentTick}: ${actor.id} 到达目的地，进入收招`,
                 null, LogVisibility.PLAYER, this.logCtx()
             );
-            actor.currentActionContext = undefined;
-            this.recordMutation(actor.id, { 'currentActionContext': null });
+            const recoveryEvt: ActionExecutionEvent = {
+                ...actEvent,
+                eventId: generateId(),
+                targetTick: this.currentTick + MOVE_RECOVERY_TICKS,
+                status: 'PENDING',
+                phase: 'RECOVERY'
+            };
+            this.eventQueue.push(recoveryEvt);
+            actor.currentActionContext = {
+                ...actor.currentActionContext!,
+                actionId: recoveryEvt.eventId,
+                phase: 'RECOVERY',
+                resolveTick: recoveryEvt.targetTick
+            };
+            this.recordMutation(actor.id, { 'currentActionContext': actor.currentActionContext });
         }
     }
 
@@ -670,7 +688,9 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         if (this.combatEnded) return true;
 
         const actors = Array.from(this.entities.values()).filter(entity => entity.type === 'ACTOR');
-        if (actors.length === 0) return false;
+        // 至少需要 2 个 ACTOR 才能判定战斗结束（last man standing）
+        // 单 ACTOR 场景（如移动测试）不应提前结束
+        if (actors.length <= 1) return false;
 
         const livingActors = actors.filter(entity => (entity.resources.current['hp'] ?? 0) > 0);
         if (livingActors.length > 1) {
