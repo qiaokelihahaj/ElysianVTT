@@ -177,16 +177,19 @@ export const HUD: React.FC = () => {
                                 if (!canAct || permission.role !== 'GM') return;
                                 const allActors = Object.entries(entities).filter(([_, e]) => e.type === 'ACTOR');
                                 const allIds = allActors.map(([id]) => id);
-                                allActors.forEach(([actorId]) => {
-                                    IntentDispatcher.dispatchCastAction(actorId, 'SYNC_TEST', allIds.filter(id => id !== actorId));
-                                });
+                                const batchIntents = allActors.map(([actorId]) => ({
+                                    actorId,
+                                    actionTemplateId: 'SYNC_TEST',
+                                    targetIds: allIds.filter(id => id !== actorId)
+                                }));
+                                IntentDispatcher.dispatchBatchCast(batchIntents);
                             }}
                             disabled={permission.role !== 'GM'}
                             className="w-10 h-10 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-purple-500/30 transition-colors flex items-center justify-center text-purple-400 text-sm font-bold group relative disabled:opacity-30 disabled:cursor-not-allowed"
-                            title="All actors cast SYNC_TEST simultaneously"
+                            title="All actors cast SYNC_TEST simultaneously (overlapping)"
                         >
                             S
-                            <span className="absolute -top-7 bg-black/80 px-2 py-0.5 rounded text-[10px] opacity-0 group-hover:opacity-100 whitespace-nowrap text-white">Sync Test (All)</span>
+                            <span className="absolute -top-7 bg-black/80 px-2 py-0.5 rounded text-[10px] opacity-0 group-hover:opacity-100 whitespace-nowrap text-white">Sync Test (Overlap)</span>
                         </button>
                         {/* Cancel action button — shown when selected entity is busy */}
                         {selectedEntity?.currentActionContext && (

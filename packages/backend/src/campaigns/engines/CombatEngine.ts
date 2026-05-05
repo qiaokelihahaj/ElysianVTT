@@ -67,7 +67,15 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         return removed;
     }
 
+    private _batchMode = false;
+
     public receiveIntent(intent: ClientIntent): void {
+        // BATCH_CAST 不依赖单个 actor
+        if (intent.intentType === 'BATCH_CAST' && intent.payload.batchIntents?.length) {
+            this.handleBatchCast(intent.payload.batchIntents);
+            return;
+        }
+
         const actor = this.entities.get(intent.actorId);
         if (!actor) return;
 
@@ -85,6 +93,23 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             this.handleInteractIntent(actor, intent);
             return;
         }
+    }
+
+    private handleBatchCast(batchIntents: ClientIntent['payload']['batchIntents']): void {
+        this._batchMode = true;
+        for (const bi of batchIntents!) {
+            const actor = this.entities.get(bi.actorId);
+            if (!actor) continue;
+            const intent: ClientIntent = {
+                actorId: bi.actorId,
+                intentType: 'CAST_ACTION',
+                clientTick: 0,
+                payload: { actionTemplateId: bi.actionTemplateId, targetIds: bi.targetIds }
+            };
+            this.handleActionIntent(actor, intent);
+        }
+        this._batchMode = false;
+        this.processQueue();
     }
 
     // ============================================================
@@ -150,7 +175,7 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             tags: ['MOVEMENT']
         } as ActionScheduledPayload);
 
-        this.processQueue();
+        if (!this._batchMode) this.processQueue();
     }
 
     // ============================================================
@@ -223,7 +248,7 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             tags: template.tags
         } as ActionScheduledPayload);
 
-        this.processQueue();
+        if (!this._batchMode) this.processQueue();
     }
 
     private handleInteractIntent(actor: Entity, intent: ClientIntent): void {

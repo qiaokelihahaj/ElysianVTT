@@ -180,6 +180,12 @@ export class PermissionService {
                     return this.reject('UNAUTHORIZED', '当前主体没有施法权限', snapshot);
                 }
                 break;
+            case 'BATCH_CAST':
+                // 批量施法仅 GM 可用（测试/调试功能）
+                if (subject.role !== 'GM') {
+                    return this.reject('UNAUTHORIZED', '批量施法仅 GM 可用', snapshot);
+                }
+                break;
             case 'INTERACT':
                 if (!this.hasCapability(subject, 'interact')) {
                     return this.reject('UNAUTHORIZED', '当前主体没有交互权限', snapshot);

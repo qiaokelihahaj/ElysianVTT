@@ -100,6 +100,15 @@ export class IntentRouter {
         if (!intent.intentType) return 'intentType is required';
 
         switch (intent.intentType) {
+            case 'BATCH_CAST':
+                if (!intent.payload?.batchIntents || intent.payload.batchIntents.length === 0) {
+                    return 'batchIntents is required for BATCH_CAST';
+                }
+                for (const bi of intent.payload.batchIntents) {
+                    if (!bi.actorId) return 'actorId is required in each batch intent';
+                    if (!bi.actionTemplateId) return 'actionTemplateId is required in each batch intent';
+                }
+                break;
             case 'CAST_ACTION':
                 if (!intent.payload?.actionTemplateId) return 'actionTemplateId is required for CAST_ACTION';
                 break;

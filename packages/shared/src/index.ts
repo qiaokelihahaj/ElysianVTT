@@ -205,13 +205,14 @@ export interface IEngineInstance {
 // ==========================================
 export interface ClientIntent {
     actorId: EntityId;
-    intentType: 'CAST_ACTION' | 'MOVE' | 'INTERACT' | 'CANCEL_ACTION';
-    clientTick: Tick; 
+    intentType: 'CAST_ACTION' | 'MOVE' | 'INTERACT' | 'CANCEL_ACTION' | 'BATCH_CAST';
+    clientTick: Tick;
     payload: {
         actionTemplateId?: string;
         targetIds?: EntityId[];
         targetCoords?: Vector3D;
         cancelSubType?: 'DELAY_CANCEL' | 'FORCE_CANCEL';
+        batchIntents?: Array<{ actorId: EntityId; actionTemplateId: string; targetIds?: EntityId[] }>;
     };
 }
 

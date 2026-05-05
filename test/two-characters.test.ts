@@ -313,6 +313,53 @@ function runTests() {
     assert(scheduledActions.length === 2, '2 个 action');
   }
 
+  // ------------------------------------------------------------------
+  // Test 6: Batch 批量施法 — 两个角色时间轴重叠
+  // ------------------------------------------------------------------
+  {
+    console.log('\n[Test 6] Batch Cast — 两个角色同时施法，时间轴重叠');
+    const engine = new CombatEngine('test-2p-6');
+    const a = makeActor('hero_a', '勇者A');
+    const b = makeActor('hero_b', '勇者B', 2, 0);
+    engine.mountEntities([a, b]);
+
+    const scheduledActions: ActionScheduledPayload[] = [];
+    engine.on('ACTION_SCHEDULED', (payload: ActionScheduledPayload) => {
+      scheduledActions.push(payload);
+    });
+
+    // 使用 BATCH_CAST — 两个角色应在相同起始 Tick 开始
+    engine.receiveIntent({
+      actorId: '__batch__',
+      intentType: 'BATCH_CAST',
+      clientTick: 0,
+      payload: {
+        batchIntents: [
+          { actorId: 'hero_a', actionTemplateId: '快速斩', targetIds: ['hero_b'] },
+          { actorId: 'hero_b', actionTemplateId: '快速斩', targetIds: ['hero_a'] }
+        ]
+      }
+    } as ClientIntent);
+
+    assert(scheduledActions.length === 2, `2 个 ACTION_SCHEDULED (实际 ${scheduledActions.length})`);
+
+    const ta = scheduledActions.find(a => a.entityId === 'hero_a')!.timeline;
+    const tb = scheduledActions.find(a => a.entityId === 'hero_b')!.timeline;
+
+    // 关键验证：两个角色的 start 相同（重叠）
+    assert(ta.start === tb.start, `双方 start 重叠 (${ta.start} === ${tb.start})`);
+    assert(ta.start === 0, `hero_a start=0 (实际 ${ta.start})`);
+    assert(ta.startupEnd === 5, `hero_a startupEnd=5 (实际 ${ta.startupEnd})`);
+    assert(ta.end === 8, `hero_a end=8 (实际 ${ta.end})`);
+
+    assert(tb.start === 0, `hero_b start=0 (实际 ${tb.start})`);
+    assert(tb.startupEnd === 5, `hero_b startupEnd=5 (实际 ${tb.startupEnd})`);
+    assert(tb.end === 8, `hero_b end=8 (实际 ${tb.end})`);
+
+    assert(ta.startupEnd === tb.startupEnd, '双方 startupEnd 重叠');
+    assert(ta.end === tb.end, '双方 end 重叠');
+  }
+
   console.log(`\n========================================`);
   console.log(`结果: ${passCount}/${testCount} 通过`);
   console.log(`========================================`);

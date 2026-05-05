@@ -73,7 +73,7 @@ async function main() {
     // 2. 播种角色数据
     await prisma.characterSheet.upsert({
         where: { id: 'actor_warrior' },
-        update: {},
+        update: { currentSceneId: 'room_1' },
         create: {
             id: 'actor_warrior',
             name: '人类战士',
@@ -97,7 +97,7 @@ async function main() {
     // 3. 播种哥布林 (位于正前方 2 格)
     await prisma.characterSheet.upsert({
         where: { id: 'target_goblin' },
-        update: {},
+        update: { currentSceneId: 'room_1' },
         create: {
             id: 'target_goblin',
             name: '哥布林',

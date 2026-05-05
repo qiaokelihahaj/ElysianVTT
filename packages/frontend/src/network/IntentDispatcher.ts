@@ -58,8 +58,21 @@ export class IntentDispatcher {
     }
 
     /**
-     * 分取消指令
+     * 分发批量施法指令（同步测试用：所有角色同时施法）
      */
+    public static dispatchBatchCast(
+        batchIntents: Array<{ actorId: EntityId; actionTemplateId: string; targetIds?: EntityId[] }>
+    ) {
+        const tick = useGameStore.getState().tick;
+        const intent: ClientIntent = {
+            actorId: '__batch__',
+            intentType: 'BATCH_CAST',
+            clientTick: tick,
+            payload: { batchIntents }
+        };
+        socketClient.sendIntent(intent);
+        console.log('[IntentDispatcher] 发送批量施法 (BATCH_CAST):', batchIntents);
+    }
     public static dispatchCancelAction(actorId: EntityId) {
         const intent: ClientIntent = {
             ...this.createBaseIntent(actorId, 'CANCEL_ACTION'),
