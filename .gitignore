@@ -36,6 +36,11 @@ pnpm-debug.log*
 # Local editor state
 .history/
 
+# Claude Code (v6 Post-Dev Workflow)
+.claude/handoff.md
+.claude/checkpoints/
+.claude/web-checklist-state.json
+
 # dotenv local variants (already covered above, keep for clarity)
 .env.local
 .env.*.local
