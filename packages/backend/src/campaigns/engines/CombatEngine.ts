@@ -705,8 +705,13 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
      * 查找对应实体，执行选中的反应动作。
      */
     public handleDecisionResponse(payload: DecisionResponsePayload): void {
-        // 如果选择忽略, 不做任何处理
-        if (!payload.chosenOptionId || payload.chosenOptionId === 'DO_NOTHING') return;
+        // 如果选择忽略或超时不做反应，恢复队列继续推进
+        if (!payload.chosenOptionId || payload.chosenOptionId === 'DO_NOTHING') {
+            if (!this.tickLoop.isEmpty()) {
+                this.processQueue();
+            }
+            return;
+        }
 
         // 通过 windowId 查找对应的 reactor entity
         const target = this.decisionTargets.get(payload.windowId);
@@ -938,33 +943,35 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             const step = this.tickLoop.step()!;
             this.pendingMutations.tick = step.tick;
 
+            // 先结算事件，再评估 hook：防止 hook 目标 tick 与真实事件 tick 重叠时事件丢失
+            const events = step.events.filter(e => e.status !== 'CANCELLED');
+            if (events.length > 0) {
+                const clashCandidates = TickLoop.filterClashable(events)
+                    .filter(e => e.actionTemplateId !== '__BUILTIN_MOVE__');
+
+                if (clashCandidates.length >= 2) {
+                    this.resolveClash(clashCandidates);
+                    const others = events.filter(e => !clashCandidates.includes(e as any));
+                    for (const e of others) {
+                        this.resolveSingleEvent(e);
+                    }
+                } else {
+                    for (const e of events) {
+                        this.resolveSingleEvent(e);
+                    }
+                }
+            }
+
             // 评估 Hook 预设（TICK_REACHED 等条件触发）
             const hookFired = this.evaluateHooks(step.tick);
-            // 清理过期钩子
             this.hookRegistry.cleanup(step.tick);
 
-            // 手动钩子触发后暂停队列，让 DECISION_POLL 立即送达前端
-            if (hookFired) break;
-
-            const events = step.events.filter(e => e.status !== 'CANCELLED');
-            if (events.length === 0) continue;
-
-            // 分离 ClashPool 候选（仅 CAST_ACTION 事件参与判定，移动事件不冲突）
-            const clashCandidates = TickLoop.filterClashable(events)
-                .filter(e => e.actionTemplateId !== '__BUILTIN_MOVE__');
-
-            if (clashCandidates.length >= 2) {
-                // ClashPool 批量结算
-                this.resolveClash(clashCandidates);
-                // 同 Tick 其他事件逐条处理
-                const others = events.filter(e => !clashCandidates.includes(e as any));
-                for (const e of others) {
-                    this.resolveSingleEvent(e);
+            // 手动钩子触发后：先广播当前 tick 的 mutations，再暂停队列让 DECISION_POLL 送达前端
+            if (hookFired) {
+                if (this.pendingMutations.mutations.length > 0) {
+                    this.broadcastMutations();
                 }
-            } else {
-                for (const e of events) {
-                    this.resolveSingleEvent(e);
-                }
+                break;
             }
 
             // 不在此处判定战斗结束 — 让队列排空后再判定
