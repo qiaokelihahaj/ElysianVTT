@@ -30,7 +30,11 @@ DICE_REGEX.lastIndex = 0;
 
 export class RuleEvaluator {
     public static evaluate(expression: string, context: EvaluationContext): EvaluationResult {
-        const scope = this.buildScope(context);
+        return this.evaluateWithDefs(expression, context, undefined);
+    }
+
+    public static evaluateWithDefs(expression: string, context: EvaluationContext, customVarDefs?: Record<string, number>): EvaluationResult {
+        const scope = this.buildScope(context, customVarDefs);
         const diceRules = context.diceRules ?? [];
         const overrides = context.overrides;
 
@@ -44,7 +48,7 @@ export class RuleEvaluator {
 
             const rawDice = DiceGenerator.generate(count, sides);
             const result = DiceProcessor.process(rawDice, diceRules, overrides);
-            
+
             diceTotal += result.total;
 
             for (const die of result.dice) {
@@ -86,7 +90,7 @@ export class RuleEvaluator {
         }
     }
 
-    private static buildScope(context: EvaluationContext): Record<string, any> {
+    private static buildScope(context: EvaluationContext, customVarDefs?: Record<string, number>): Record<string, any> {
         const scope: Record<string, any> = { actor: {}, target: {} };
 
         if (context.actor?.resources?.current) {
@@ -98,6 +102,13 @@ export class RuleEvaluator {
         if (context.target?.resources?.current) {
             Object.entries(context.target.resources.current).forEach(([key, val]) => {
                 scope.target[key] = val;
+            });
+        }
+
+        // Custom variable definitions from RulePack
+        if (customVarDefs) {
+            Object.entries(customVarDefs).forEach(([key, val]) => {
+                scope[key] = val;
             });
         }
 

@@ -75,6 +75,14 @@ export class IntentRouter {
             return;
         }
 
+        logger.debug(`Authorization check for ${intent.intentType}@${intent.actorId}`, {
+            subjectRole: subject.role,
+            subjectControlled: subject.controlledEntityIds,
+            sceneId,
+            actorId: intent.actorId,
+            intentType: intent.intentType
+        });
+
         const authorization = PermissionService.authorizeIntent(subject, sceneId, intent);
         if (!authorization.allowed) {
             logger.warn(`Intent authorization failed`, {
@@ -82,7 +90,9 @@ export class IntentRouter {
                 actorId: intent.actorId,
                 intentType: intent.intentType,
                 code: authorization.code,
-                message: authorization.message
+                message: authorization.message,
+                subjectRole: subject.role,
+                subjectControlled: subject.controlledEntityIds
             });
             socket.emit('ERROR', {
                 code: authorization.code ?? 'UNAUTHORIZED',
@@ -121,6 +131,25 @@ export class IntentRouter {
                 }
                 break;
             case 'CANCEL_ACTION':
+                break;
+            case 'DEFEND':
+                break;
+            case 'DODGE':
+                if (!intent.payload?.targetCoords) return 'targetCoords is required for DODGE';
+                break;
+            case 'REACTION':
+                if (!intent.payload?.actionTemplateId) return 'actionTemplateId is required for REACTION';
+                if (!intent.payload?.reactionTargetId) return 'reactionTargetId is required for REACTION';
+                break;
+            case 'MICRO_EVADE':
+                if (!intent.payload?.evadeSubType) return 'evadeSubType is required for MICRO_EVADE';
+                if (!['DUCK','HOP','SLIP'].includes(intent.payload.evadeSubType)) return 'evadeSubType must be DUCK, HOP, or SLIP';
+                break;
+            case 'PRIORITY_TOGGLE':
+                if (!intent.payload?.toggleMode) return 'toggleMode is required for PRIORITY_TOGGLE';
+                break;
+            case 'HOOK_PRESET':
+                if (!intent.payload?.hookPreset) return 'hookPreset is required for HOOK_PRESET';
                 break;
             default:
                 return `Unknown intent type: ${intent.intentType}`;

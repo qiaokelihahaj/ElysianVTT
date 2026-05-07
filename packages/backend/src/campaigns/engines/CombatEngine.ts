@@ -1,9 +1,10 @@
 // packages/backend/src/campaigns/engines/CombatEngine.ts
 import { EventEmitter } from 'events';
-import { 
-    IEngineInstance, Tick, ClientIntent, Entity, EntityId, 
-    TickEvent, ActionExecutionEvent, MovementStepEvent, StateMutationPayload, 
-    ActionScheduledPayload, LogVisibility
+import {
+    IEngineInstance, Tick, ClientIntent, Entity, EntityId,
+    TickEvent, ActionExecutionEvent, MovementStepEvent, StateMutationPayload,
+    ActionScheduledPayload, DecisionPollPayload, DecisionResponsePayload, DecisionOption,
+    PlayerPriorityToggle, HookPreset, HookTrigger, LogVisibility, UnifiedHook
 } from '@hard-vtt/shared';
 import { PriorityQueue } from '../../core/engine/PriorityQueue.js';
 import { TickLoop } from '../../core/engine/TickLoop.js';
@@ -11,10 +12,14 @@ import { ClashPool } from '../../core/engine/ClashPool.js';
 import type { ClashResult } from '../../core/engine/ClashPool.js';
 import { generateId } from '../../utils/IdGenerator.js';
 import { Dictionary } from '../../db/Dictionary.js';
+import { RulePackLoader } from '../../db/RulePackLoader.js';
 import { EffectSystem } from '../../core/systems/EffectSystem.js';
 import { SpatialSystem } from '../../core/systems/SpatialSystem.js';
 import { RuleEvaluator } from '../../core/systems/RuleEvaluator.js';
+import { VectorMath } from '../../utils/VectorMath.js';
 import { Logger } from '../../utils/Logger.js';
+import { HookRegistry } from './HookRegistry.js';
+import type { RulePackDefs } from '@hard-vtt/shared';
 
 const MOVE_INTERVAL_TICKS = 10;
 const MOVE_STEP_SIZE = 1.0;
@@ -31,14 +36,29 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
     private combatEnded = false;
     
     private pendingMutations: StateMutationPayload = { tick: 0, mutations: [] };
-    
+
+    private hookRegistry: HookRegistry;
+    private decisionTargets: Map<string, { reactorId: EntityId; sourceId: EntityId }> = new Map();
+
+    private playerToggles: Map<EntityId, PlayerPriorityToggle> = new Map();
+
+    private rulePackDefs: RulePackDefs | null = null;
+
     private logger: Logger;
 
-    constructor(engineId: string) {
+    constructor(engineId: string, rulePackId?: string) {
         super();
         this.engineId = engineId;
         this.logger = Logger.create(`Engine:Combat`);
         this.logger.info(`Engine created`, null, { sceneId: this.engineId });
+        this.hookRegistry = new HookRegistry();
+
+        if (rulePackId) {
+            RulePackLoader.load(rulePackId).then(defs => {
+                this.rulePackDefs = defs;
+                this.logger.info(`RulePack '${rulePackId}' bound to engine`, null, { sceneId: this.engineId });
+            });
+        }
     }
 
     private logCtx() {
@@ -47,6 +67,10 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
 
     public getAllEntities(): Entity[] {
         return Array.from(this.entities.values());
+    }
+
+    public getRulePackDefs(): RulePackDefs | null {
+        return this.rulePackDefs;
     }
 
     public mountEntities(entities: Entity[]): void {
@@ -84,6 +108,16 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             return;
         }
 
+        if (intent.intentType === 'DEFEND') {
+            this.handleDefendIntent(actor, intent);
+            return;
+        }
+
+        if (intent.intentType === 'DODGE' && intent.payload.targetCoords) {
+            this.handleDodgeIntent(actor, intent.payload.targetCoords);
+            return;
+        }
+
         if (intent.intentType === 'CAST_ACTION' && intent.payload.actionTemplateId) {
             this.handleActionIntent(actor, intent);
             return;
@@ -91,6 +125,26 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
 
         if (intent.intentType === 'INTERACT') {
             this.handleInteractIntent(actor, intent);
+            return;
+        }
+
+        if (intent.intentType === 'MICRO_EVADE') {
+            this.handleMicroEvade(actor, intent);
+            return;
+        }
+
+        if (intent.intentType === 'PRIORITY_TOGGLE') {
+            this.handleToggleIntent(actor, intent);
+            return;
+        }
+
+        if (intent.intentType === 'HOOK_PRESET') {
+            this.handleHookIntent(actor, intent);
+            return;
+        }
+
+        if (intent.intentType === 'GAMBIT_PRESET') {
+            this.logger.warn(`GAMBIT_PRESET not yet implemented for ${actor.id}`, null, this.logCtx());
             return;
         }
     }
@@ -160,7 +214,7 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         for (let i = 0; i < waypoints.length; i++) {
             moveActiveTicks.push(moveTick + i * MOVE_INTERVAL_TICKS);
         }
-        const moveEndTick = evt.targetTick + (waypoints.length - 1) * MOVE_INTERVAL_TICKS + 5;
+        const moveEndTick = evt.targetTick + (waypoints.length - 1) * MOVE_INTERVAL_TICKS + 1 + MOVE_RECOVERY_TICKS;
         this.emit('ACTION_SCHEDULED', {
             entityId: actor.id,
             actionId: '__BUILTIN_MOVE__',
@@ -210,9 +264,8 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
 
         // 计算 channel 持续时长和脉冲节点
         // 引擎行为：第一个脉冲在 activeTick，之后每 intervalTicks 一个脉冲
-        // pushRecovery 在最后一个脉冲 tick + recoveryTicks 触发
+        // pushRecovery 在最后一个脉冲 tick + 1 + recoveryTicks 触发
         const activeTick = ct + startupTicks;
-        let endTick = activeTick + recoveryTicks;
         const pulseTicks: number[] = [activeTick];
         if (template.channelOptions) {
             const pulses = template.channelOptions.maxPulses ?? 1;
@@ -220,9 +273,9 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             for (let i = 1; i < pulses; i++) {
                 pulseTicks.push(activeTick + i * interval);
             }
-            const lastPulseTick = activeTick + (pulses - 1) * interval;
-            endTick = lastPulseTick + recoveryTicks;
         }
+        const lastPulseTick = pulseTicks[pulseTicks.length - 1];
+        const endTick = lastPulseTick + 1 + recoveryTicks;
 
         actor.currentActionContext = {
             type: 'CASTING',
@@ -279,6 +332,490 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
                 text: 'INTERACT'
             }]
         });
+    }
+
+    // ============================================================
+    //  防御（招架）
+    // ============================================================
+
+    private handleDefendIntent(actor: Entity, intent: ClientIntent): void {
+        this.cancelCurrentAction(actor);
+
+        const template = Dictionary.getAction('PARRY');
+        if (!template) return;
+
+        const ct = this.currentTick;
+        const startupTicks = template.timeCost.startupTicks;
+
+        const evt: ActionExecutionEvent = {
+            eventId: generateId(),
+            eventType: 'ACTION_PHASE',
+            targetTick: ct + startupTicks,
+            status: 'PENDING',
+            actorId: actor.id,
+            actionTemplateId: 'PARRY',
+            phase: 'STARTUP'
+        };
+
+        this.eventQueue.push(evt);
+
+        actor.currentActionContext = {
+            type: 'CASTING',
+            actionId: evt.eventId,
+            actionTemplateId: 'PARRY',
+            phase: 'DELAY',
+            resolveTick: evt.targetTick,
+            pulseCount: 0
+        };
+
+        // Deduct resource cost
+        if (template.resourceCost) {
+            for (const [resKey, expr] of Object.entries(template.resourceCost)) {
+                const cost = Math.abs(RuleEvaluator.evaluate(expr, { actor }).total);
+                if (cost > 0 && actor.resources.current[resKey] !== undefined) {
+                    actor.resources.current[resKey] = Math.max(0, (actor.resources.current[resKey] ?? 0) - cost);
+                    this.recordMutation(actor.id, { [`resources.current.${resKey}`]: actor.resources.current[resKey] });
+                }
+            }
+        }
+
+        this.logger.game(`🛡️ [Parry] Tick ${this.currentTick}: ${actor.id} 进入招架姿态 (startup=${startupTicks})`, null, LogVisibility.PLAYER, this.logCtx());
+
+        this.emit('ACTION_SCHEDULED', {
+            entityId: actor.id,
+            actionId: 'PARRY',
+            actionName: '招架',
+            timeline: {
+                start: ct,
+                startupEnd: ct + startupTicks,
+                recoveryStart: ct + startupTicks + 1,
+                end: ct + startupTicks + 1 + template.timeCost.recoveryTicks,
+                pulseTicks: []
+            },
+            tags: ['DEFENSE']
+        } as ActionScheduledPayload);
+
+        if (!this._batchMode) this.processQueue();
+    }
+
+    // ============================================================
+    //  闪避
+    // ============================================================
+
+    private handleDodgeIntent(actor: Entity, targetCoords: { x: number; y: number; z: number }): void {
+        this.cancelCurrentAction(actor);
+
+        const template = Dictionary.getAction('DODGE');
+        if (!template) return;
+
+        // Calculate dodge distance
+        const dist = VectorMath.distance(actor.transform.coords, targetCoords);
+        const MAX_DODGE_DIST = 2.0;
+        if (dist > MAX_DODGE_DIST) {
+            const dir = VectorMath.normalize(VectorMath.subtract(targetCoords, actor.transform.coords));
+            targetCoords = {
+                x: actor.transform.coords.x + dir.x * MAX_DODGE_DIST,
+                y: actor.transform.coords.y + dir.y * MAX_DODGE_DIST,
+                z: actor.transform.coords.z + (dir.z ?? 0) * MAX_DODGE_DIST
+            };
+        }
+
+        const ct = this.currentTick;
+
+        // Move immediately (DODGE has almost no startup)
+        actor.transform.coords = { ...targetCoords };
+        this.recordMutation(actor.id, {
+            'transform.coords.x': targetCoords.x,
+            'transform.coords.y': targetCoords.y,
+            'transform.coords.z': targetCoords.z
+        });
+
+        // Mark actor as dodging (flag for whiff detection)
+        actor.currentActionContext = {
+            type: 'CASTING',
+            actionId: generateId(),
+            actionTemplateId: 'DODGE',
+            phase: 'ACTIVE',
+            resolveTick: ct + 2,
+            pulseCount: 0
+        };
+
+        // Deduct FP cost
+        if (template.resourceCost) {
+            for (const [resKey, expr] of Object.entries(template.resourceCost)) {
+                const cost = Math.abs(RuleEvaluator.evaluate(expr, { actor }).total);
+                if (cost > 0 && actor.resources.current[resKey] !== undefined) {
+                    actor.resources.current[resKey] = Math.max(0, (actor.resources.current[resKey] ?? 0) - cost);
+                    this.recordMutation(actor.id, { [`resources.current.${resKey}`]: actor.resources.current[resKey] });
+                }
+            }
+        }
+
+        // Push recovery
+        const recoveryEvt: ActionExecutionEvent = {
+            eventId: generateId(),
+            eventType: 'ACTION_PHASE',
+            targetTick: ct + 1 + template.timeCost.recoveryTicks,
+            status: 'PENDING',
+            actorId: actor.id,
+            actionTemplateId: 'DODGE',
+            phase: 'RECOVERY'
+        };
+        this.eventQueue.push(recoveryEvt);
+
+        this.logger.game(`💨 [Dodge] Tick ${this.currentTick}: ${actor.id} 闪避到 (${targetCoords.x.toFixed(1)},${targetCoords.y.toFixed(1)})`, null, LogVisibility.PLAYER, this.logCtx());
+
+        if (!this._batchMode) this.processQueue();
+    }
+
+    // ============================================================
+    //  玩家优先级切换与 Hook 预设
+    // ============================================================
+
+    private handleToggleIntent(actor: Entity, intent: ClientIntent): void {
+        const mode = intent.payload.toggleMode;
+        if (!mode) return;
+
+        this.playerToggles.set(actor.id, mode);
+        this.logger.game(
+            `🔘 [Toggle] ${actor.id} 切换优先级模式: ${mode}`,
+            { actorId: actor.id, mode },
+            LogVisibility.PLAYER,
+            this.logCtx()
+        );
+    }
+
+    private handleHookIntent(actor: Entity, intent: ClientIntent): void {
+        const preset = intent.payload.hookPreset;
+        if (!preset) return;
+
+        // Register via HookRegistry
+        this.hookRegistry.register(actor.id, preset, 'MANUAL', this.currentTick, 0);
+
+        this.logger.game(
+            `🪝 [Hook] ${actor.id} ${preset.enabled ? '启用' : '禁用'} Hook '${preset.label}' (${preset.id})`,
+            { actorId: actor.id, hookId: preset.id, enabled: preset.enabled },
+            LogVisibility.PLAYER,
+            this.logCtx()
+        );
+
+        // TICK_REACHED 钩子：targetTick === currentTick 时立即触发（不推进时间）
+        if (preset.enabled && preset.trigger.type === 'TICK_REACHED' && preset.trigger.targetTick === this.currentTick) {
+            this.evaluateHooks(this.currentTick);
+        }
+        // 否则完全被动触发，由 processQueue 中的 injectHookBreakpoints 确保精确 tick 断点
+    }
+
+    /**
+     * 在每个 Tick 评估所有 Hook 预设条件。
+     * 委托给 HookRegistry.evaluate()，对触发钩子发出 DECISION_POLL。
+     */
+    /**
+     * 评估所有 Hook，返回是否触发了手动钩子（已发出 DECISION_POLL）。
+     * 返回 true 表示调用方应暂停 processQueue 等待玩家决策。
+     */
+    private evaluateHooks(tick: Tick): boolean {
+        const firedHooks = this.hookRegistry.evaluate(tick, this.entities);
+        let manualFired = false;
+
+        for (const hook of firedHooks) {
+            // 跳过系统钩子的 DECISION_POLL（仅手动钩子需要决策触发）
+            if (hook.source === 'SYSTEM') continue;
+
+            manualFired = true;
+
+            const windowId = generateId();
+            const payload: DecisionPollPayload = {
+                windowId,
+                windowType: 'REACTION',
+                actorId: hook.entityId,
+                sourceAction: {
+                    actorId: 'SYSTEM',
+                    actionName: hook.label,
+                    startupRemainingTicks: 0
+                },
+                countdownMs: 5000,
+                availableOptions: [],
+                tick
+            };
+
+            this.logger.game(
+                `🪝 [Hook] Tick ${tick}: '${hook.label}' 触发，强制决策窗口`,
+                { hookId: hook.id, entityId: hook.entityId, tick },
+                LogVisibility.PLAYER,
+                this.logCtx()
+            );
+
+            this.emit('DECISION_POLL', payload);
+        }
+
+        return manualFired;
+    }
+
+    // ============================================================
+    //  反应窗口过滤与广播
+    // ============================================================
+
+    /**
+     * 获取对指定动作有效的反应者列表。
+     * 过滤条件:
+     *   - ACTOR 类型
+     *   - 排除 source 自己
+     *   - RECOVERY 阶段跳过
+     *   - FP <= 0 && PP <= 0 跳过
+     *   - 空间: isTarget OR distance <= 15
+     *   - MTG 开关: PASS_ALL 跳过; TARGET_ONLY 且 !isTarget 跳过
+     */
+    private getValidReactors(sourceAction: ActionExecutionEvent): Entity[] {
+        const source = this.entities.get(sourceAction.actorId);
+        if (!source) return [];
+
+        const allEntities = Array.from(this.entities.values());
+        const targetIds = new Set(sourceAction.targetIds ?? []);
+
+        return allEntities.filter(e => {
+            if (e.id === sourceAction.actorId) return false;
+            if (e.type !== 'ACTOR') return false;
+
+            // RECOVERY 阶段跳过
+            if (e.currentActionContext?.phase === 'RECOVERY') return false;
+
+            // 资源检查: FP <= 0 && PP <= 0 跳过
+            const fp = e.resources.current['focus'] ?? e.resources.current['fp'] ?? 1;
+            const pp = e.resources.current['poise'] ?? e.resources.current['pp'] ?? 1;
+            if (fp <= 0 && pp <= 0) return false;
+
+            const isTarget = targetIds.has(e.id);
+            const dist = VectorMath.distance(source.transform.coords, e.transform.coords);
+
+            // 空间条件: 是目标 OR 距离 <= 15
+            if (!isTarget && dist > 15) return false;
+
+            // MTG 开关检查
+            const toggle = this.playerToggles.get(e.id);
+            if (toggle === 'PASS_ALL') return false;
+            if (toggle === 'TARGET_ONLY' && !isTarget) return false;
+
+            return true;
+        });
+    }
+
+    /**
+     * 从动作模板构建可用反应选项列表。
+     */
+    private buildReactionOptions(action: ActionExecutionEvent): DecisionOption[] {
+        const actor = this.entities.get(action.actorId);
+        if (!actor) return [];
+
+        const options: DecisionOption[] = [];
+
+        // 基础选项: 忽略 (放弃反应)
+        options.push({
+            id: 'DO_NOTHING',
+            label: '放弃',
+            resourceCost: {},
+            canAfford: true
+        });
+
+        // 检查是否有可用的反应技能
+        const reactionSkills = ['PARRY', 'DODGE', 'INTERRUPT'];
+        for (const skillId of reactionSkills) {
+            const template = Dictionary.getAction(skillId);
+            if (!template) continue;
+
+            const costs: Record<string, number> = {};
+            let canAfford = true;
+
+            if (template.resourceCost) {
+                for (const [resKey, expr] of Object.entries(template.resourceCost)) {
+                    const cost = Math.abs(RuleEvaluator.evaluate(expr, { actor }).total);
+                    const cur = actor.resources.current[resKey] ?? 0;
+                    costs[resKey] = cost;
+                    if (cur < cost) canAfford = false;
+                }
+            }
+
+            options.push({
+                id: skillId,
+                label: skillId === 'PARRY' ? '招架' : skillId === 'DODGE' ? '闪避' : '打断施法',
+                resourceCost: costs,
+                canAfford
+            });
+        }
+
+        return options;
+    }
+
+    /**
+     * 为有效反应者生成系统钩子，注册到 HookRegistry 并通过 DECISION_POLL 告知客户端。
+     * TTL 到期后由 HookRegistry.cleanup() 自动清理。
+     */
+    private generateSystemHooks(sourceAction: ActionExecutionEvent): void {
+        const source = this.entities.get(sourceAction.actorId);
+        if (!source) return;
+
+        const template = Dictionary.getAction(sourceAction.actionTemplateId);
+        if (!template) return;
+
+        const validReactors = this.getValidReactors(sourceAction);
+        if (validReactors.length === 0) return;
+
+        const countdownMs = 3000;
+        const options = this.buildReactionOptions(sourceAction);
+        const hookTtl = 15; // ticks
+
+        for (const reactor of validReactors) {
+            const windowId = generateId();
+            const hookPreset: HookPreset = {
+                id: generateId(),
+                entityId: reactor.id,
+                label: `Reaction to ${template.id}`,
+                trigger: { type: 'TICK_REACHED', targetTick: this.currentTick },
+                enabled: true
+            };
+
+            this.hookRegistry.register(reactor.id, hookPreset, 'SYSTEM', this.currentTick, hookTtl);
+            this.decisionTargets.set(windowId, { reactorId: reactor.id, sourceId: source.id });
+
+            const payload: DecisionPollPayload = {
+                windowId,
+                windowType: 'REACTION',
+                actorId: reactor.id,
+                sourceAction: {
+                    actorId: source.id,
+                    actionName: template.id,
+                    startupRemainingTicks: 0
+                },
+                countdownMs,
+                availableOptions: options,
+                tick: this.currentTick
+            };
+
+            this.emit('DECISION_POLL', payload);
+        }
+
+        this.logger.game(
+            `⚡ [SystemHook] Tick ${this.currentTick}: ${source.id}/${template.id} 生成 ${validReactors.length} 个系统钩子`,
+            null, LogVisibility.PLAYER, this.logCtx()
+        );
+    }
+
+    /**
+     * 处理客户端对决策窗口的响应。
+     * 查找对应实体，执行选中的反应动作。
+     */
+    public handleDecisionResponse(payload: DecisionResponsePayload): void {
+        // 如果选择忽略, 不做任何处理
+        if (!payload.chosenOptionId || payload.chosenOptionId === 'DO_NOTHING') return;
+
+        // 通过 windowId 查找对应的 reactor entity
+        const target = this.decisionTargets.get(payload.windowId);
+        if (!target) {
+            this.logger.warn(`DecisionResponse: 未找到窗口 ${payload.windowId} 对应的实体`, null, this.logCtx());
+            return;
+        }
+
+        const reactor = this.entities.get(target.reactorId);
+        if (!reactor) {
+            this.logger.warn(`DecisionResponse: 实体 ${target.reactorId} 不存在`, null, this.logCtx());
+            this.decisionTargets.delete(payload.windowId);
+            return;
+        }
+
+        // 清理 decision 映射
+        this.decisionTargets.delete(payload.windowId);
+
+        // 执行选中的反应动作
+        const reactionTemplate = Dictionary.getAction(payload.chosenOptionId);
+        if (!reactionTemplate) {
+            this.logger.warn(`DecisionResponse: 动作模板 ${payload.chosenOptionId} 不存在`, null, this.logCtx());
+            return;
+        }
+
+        // 取消当前动作并创建反应动作事件
+        this.cancelCurrentAction(reactor);
+
+        const ct = this.currentTick;
+        const evt: ActionExecutionEvent = {
+            eventId: generateId(),
+            eventType: 'ACTION_PHASE',
+            targetTick: ct + reactionTemplate.timeCost.startupTicks,
+            status: 'PENDING',
+            actorId: reactor.id,
+            targetIds: [target.sourceId],
+            actionTemplateId: reactionTemplate.id,
+            phase: 'STARTUP'
+        };
+
+        this.eventQueue.push(evt);
+
+        reactor.currentActionContext = {
+            type: 'CASTING',
+            actionId: evt.eventId,
+            actionTemplateId: reactionTemplate.id,
+            phase: 'STARTUP',
+            resolveTick: evt.targetTick,
+            pulseCount: 0
+        };
+
+        this.logger.game(
+            `🎯 [DecisionResponse] Tick ${this.currentTick}: ${reactor.id} 选择反应: ${payload.chosenOptionId}`,
+            { windowId: payload.windowId, reactorId: reactor.id, chosenOptionId: payload.chosenOptionId },
+            LogVisibility.PLAYER,
+            this.logCtx()
+        );
+
+        this.processQueue();
+    }
+
+    // ============================================================
+    //  微闪避
+    // ============================================================
+
+    private handleMicroEvade(actor: Entity, intent: ClientIntent): void {
+        const evadeType = intent.payload.evadeSubType;
+        if (!evadeType || !['DUCK', 'HOP', 'SLIP'].includes(evadeType)) return;
+
+        this.cancelCurrentAction(actor);
+
+        const ct = this.currentTick;
+
+        // Very fast startup, long recovery
+        const startupTicks = 2;
+        const recoveryTicks = 10;
+
+        actor.currentActionContext = {
+            type: 'CASTING',
+            actionId: generateId(),
+            actionTemplateId: `MICRO_EVADE_${evadeType}`,
+            phase: 'ACTIVE',
+            resolveTick: ct + startupTicks,
+            pulseCount: 0
+        };
+
+        // Deduct FP cost
+        const fp = actor.resources.current['focus'] ?? actor.resources.current['fp'] ?? 0;
+        if (fp >= 5) {
+            const key = actor.resources.current['focus'] !== undefined ? 'focus' : 'fp';
+            actor.resources.current[key] = Math.max(0, fp - 5);
+            this.recordMutation(actor.id, { [`resources.current.${key}`]: actor.resources.current[key] });
+        }
+
+        // Push recovery
+        const recoveryEvt: ActionExecutionEvent = {
+            eventId: generateId(),
+            eventType: 'ACTION_PHASE',
+            targetTick: ct + startupTicks + 1 + recoveryTicks,
+            status: 'PENDING',
+            actorId: actor.id,
+            actionTemplateId: `MICRO_EVADE_${evadeType}`,
+            phase: 'RECOVERY'
+        };
+        this.eventQueue.push(recoveryEvt);
+
+        this.logger.game(`🔄 [MicroEvade] Tick ${this.currentTick}: ${actor.id} 尝试 ${evadeType} 微避`, null, LogVisibility.PLAYER, this.logCtx());
+
+        if (!this._batchMode) this.processQueue();
     }
 
     // ============================================================
@@ -369,6 +906,25 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
     //  核心队列处理 — TickLoop 驱动
     // ============================================================
 
+    /**
+     * 在 processQueue 每次 step 前注入 hook 断点事件。
+     * 如果活跃 TICK_REACHED hook 的 targetTick 在 (currentTick, nextEventTick) 之间，
+     * 则推入一个断点事件让引擎精确在该 tick 停下触发 hook，而非跳到下一个事件才触发。
+     */
+    private injectHookBreakpoints(): void {
+        const nextTick = this.tickLoop.peekNextTick();
+        if (nextTick === null) return;
+        const breakTick = this.hookRegistry.findEarliestTargetTickInRange(this.currentTick, nextTick);
+        if (breakTick !== null) {
+            this.logger.info(`[HookBreak] 注入断点: currentTick=${this.currentTick}, nextTick=${nextTick}, breakTick=${breakTick}`, null, this.logCtx());
+            this.eventQueue.push({
+                eventId: `__hook_break_${breakTick}`,
+                targetTick: breakTick,
+                status: 'PENDING'
+            });
+        }
+    }
+
     private processQueue(): void {
         while (!this.tickLoop.isEmpty()) {
             // 广播上一轮的 accumulation
@@ -376,8 +932,19 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
                 this.broadcastMutations();
             }
 
+            // 注入 hook 断点：确保 TICK_REACHED hook 在目标 tick 精确触发
+            this.injectHookBreakpoints();
+
             const step = this.tickLoop.step()!;
             this.pendingMutations.tick = step.tick;
+
+            // 评估 Hook 预设（TICK_REACHED 等条件触发）
+            const hookFired = this.evaluateHooks(step.tick);
+            // 清理过期钩子
+            this.hookRegistry.cleanup(step.tick);
+
+            // 手动钩子触发后暂停队列，让 DECISION_POLL 立即送达前端
+            if (hookFired) break;
 
             const events = step.events.filter(e => e.status !== 'CANCELLED');
             if (events.length === 0) continue;
@@ -552,7 +1119,7 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             const recoveryEvt: ActionExecutionEvent = {
                 ...actEvent,
                 eventId: generateId(),
-                targetTick: this.currentTick + MOVE_RECOVERY_TICKS,
+                targetTick: this.currentTick + 1 + MOVE_RECOVERY_TICKS,
                 status: 'PENDING',
                 phase: 'RECOVERY'
             };
@@ -572,10 +1139,17 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
 
         // === RECOVERY phase: 动作已完成，清除上下文 ===
         if (actEvent.phase === 'RECOVERY') {
-            this.logger.game(
-                `🛡️ [Action] Tick ${this.currentTick}: ${actor.id} 收招完成.`,
-                null, LogVisibility.PLAYER, this.logCtx()
-            );
+            if (actEvent.actionTemplateId === 'DODGE') {
+                this.logger.game(
+                    `💨 [Dodge] Tick ${this.currentTick}: ${actor.id} 闪避收招完成.`,
+                    null, LogVisibility.PLAYER, this.logCtx()
+                );
+            } else {
+                this.logger.game(
+                    `🛡️ [Action] Tick ${this.currentTick}: ${actor.id} 收招完成.`,
+                    null, LogVisibility.PLAYER, this.logCtx()
+                );
+            }
             actor.currentActionContext = undefined;
             this.recordMutation(actor.id, { 'currentActionContext': null });
             return;
@@ -596,6 +1170,120 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             null, LogVisibility.PLAYER, this.logCtx()
         );
 
+        // === 微闪避检测: 检查目标是否正在进行微闪避 ===
+        const microEvasionMap: Record<string, string> = {
+            'MICRO_EVADE_DUCK': 'HIGH',
+            'MICRO_EVADE_HOP': 'LOW',
+            'MICRO_EVADE_SLIP': 'LINEAR'
+        };
+
+        let microEvasionTriggered = false;
+        for (const target of targets) {
+            const targetCtx = target.currentActionContext;
+            if (!targetCtx?.actionTemplateId || !microEvasionMap[targetCtx.actionTemplateId]) continue;
+
+            const evadedTag = microEvasionMap[targetCtx.actionTemplateId];
+            const attackHasTag = template.attackTags?.includes(evadedTag as any);
+
+            if (attackHasTag) {
+                microEvasionTriggered = true;
+                this.logger.game(`🔄 [MicroEvade] ${target.id} 的 ${targetCtx.actionTemplateId} 成功闪避了 ${template.id} (Tag: ${evadedTag}匹配)`, null, LogVisibility.PLAYER, this.logCtx());
+
+                actEvent.whiffed = true;
+                const extendedRecovery = Math.ceil(template.timeCost.recoveryTicks * 1.5);
+
+                actor.currentActionContext = {
+                    ...actor.currentActionContext!,
+                    phase: 'RECOVERY',
+                    resolveTick: this.currentTick + extendedRecovery
+                };
+
+                const recoveryEvt: ActionExecutionEvent = {
+                    ...actEvent,
+                    eventId: generateId(),
+                    targetTick: this.currentTick + extendedRecovery,
+                    status: 'PENDING',
+                    phase: 'RECOVERY'
+                };
+                this.eventQueue.push(recoveryEvt);
+
+                this.emit('VISUAL_FX', {
+                    tick: this.currentTick,
+                    events: [{
+                        eventId: generateId(),
+                        eventType: 'WHIFF',
+                        sourceId: actor.id,
+                        targetId: target.id,
+                        fxTemplateId: 'micro_evade',
+                        durationMs: 800,
+                        text: '🔄 微避成功!'
+                    }]
+                });
+                break;
+            } else {
+                this.logger.game(`💥 [MicroEvade] ${target.id} 的 ${targetCtx.actionTemplateId} 未能闪避 ${template.id} (Tag不匹配)`, null, LogVisibility.PLAYER, this.logCtx());
+            }
+        }
+
+        if (microEvasionTriggered) return;
+
+        // === 挥空检测: Check range for whiff ===
+        let allTargetsInRange = true;
+        if (template.range && template.range.distanceExpr && targets.length > 0) {
+            for (const target of targets) {
+                const dist = VectorMath.distance(actor.transform.coords, target.transform.coords);
+                const maxRange = Math.abs(RuleEvaluator.evaluate(template.range.distanceExpr, { actor }).total);
+                if (dist > maxRange + 0.1) {
+                    allTargetsInRange = false;
+                    break;
+                }
+            }
+
+            if (!allTargetsInRange) {
+                for (const target of targets) {
+                    if (target.currentActionContext?.actionTemplateId === 'DODGE' &&
+                        target.currentActionContext?.phase === 'ACTIVE') {
+                        allTargetsInRange = false;
+                    }
+                }
+            }
+        }
+
+        if (!allTargetsInRange && targets.length > 0) {
+            actEvent.whiffed = true;
+            const extendedRecovery = Math.ceil(template.timeCost.recoveryTicks * 1.5);
+
+            this.logger.game(`💨 [Whiff] Tick ${this.currentTick}: ${actor.id} 的 ${template.id} 未命中! 收招延长至 ${extendedRecovery}`, null, LogVisibility.PLAYER, this.logCtx());
+
+            this.emit('VISUAL_FX', {
+                tick: this.currentTick,
+                events: [{
+                    eventId: generateId(),
+                    eventType: 'WHIFF',
+                    sourceId: actor.id,
+                    fxTemplateId: 'whiff',
+                    durationMs: 500,
+                    text: '💨 挥空!'
+                }]
+            });
+
+            actor.currentActionContext = {
+                ...actor.currentActionContext!,
+                phase: 'RECOVERY',
+                resolveTick: this.currentTick + extendedRecovery
+            };
+
+            const recoveryEvt: ActionExecutionEvent = {
+                ...actEvent,
+                eventId: generateId(),
+                targetTick: this.currentTick + extendedRecovery,
+                status: 'PENDING',
+                phase: 'RECOVERY'
+            };
+            this.eventQueue.push(recoveryEvt);
+            return;
+        }
+
         const mutations = EffectSystem.applyAction(template, actor, targets, this.logCtx(), (target) => {
             this.cancelCurrentAction(target);
         });
@@ -608,6 +1296,9 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
 
         ctx.pulseCount = pulseNum;
         this.checkSustainAfterMutations([...affectedIds, actor.id]);
+
+        // === 系统钩子: 为有效反应者注册系统钩子 ===
+        this.generateSystemHooks(actEvent);
 
         const channel = template.channelOptions;
 
@@ -656,7 +1347,7 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         const recoveryEvt: ActionExecutionEvent = {
             ...prevEvent,
             eventId: generateId(),
-            targetTick: this.currentTick + template.timeCost.recoveryTicks,
+            targetTick: this.currentTick + 1 + template.timeCost.recoveryTicks,
             status: 'PENDING',
             phase: 'RECOVERY'
         };

@@ -1,8 +1,14 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { useGameStore } from '../store/gameStore';
 import { IntentDispatcher } from '../network/IntentDispatcher';
 import { TickMeter } from './components/TickMeter';
 import { EntityList } from './components/EntityList';
+import { TestToolbox } from './TestToolbox';
+import { ActionBar } from './components/ActionBar';
+import { ReactionCountdown } from './components/ReactionCountdown';
+import { TacticalDecisionPanel } from './components/TacticalDecisionPanel';
+import { PriorityToggles } from './components/PriorityToggles';
+import { HookEditor } from './components/HookEditor';
 
 export const HUD: React.FC = () => {
     const entities = useGameStore(state => state.entities);
@@ -10,15 +16,46 @@ export const HUD: React.FC = () => {
     const selectedEntityId = useGameStore(state => state.selectedEntityId);
     const uiState = useGameStore(state => state.uiState);
     const permission = useGameStore(state => state.permission);
+    const activeWindow = useGameStore(state => state.tactical.activeWindow);
+    const reactionTriggered = useGameStore(state => state.tactical.reactionTriggered);
+    const triggerReaction = useGameStore(state => state.triggerReaction);
+    const resetReaction = useGameStore(state => state.resetReaction);
     const { setUiMode, resetUiState } = useGameStore.getState();
-    
+
     const selectedEntity = selectedEntityId ? entities[selectedEntityId] : null;
-    const canAct = permission.role !== 'OB';
+    const canAct = permission.role !== 'OB' && (
+        permission.role === 'GM' ||
+        (!!selectedEntityId && permission.controlledEntityIds.includes(selectedEntityId))
+    );
+    const [showToolbox, setShowToolbox] = useState(false);
+    const [showHookEditor, setShowHookEditor] = useState(false);
     const roleBadgeClass = permission.role === 'GM'
         ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
         : permission.role === 'PL'
             ? 'bg-sky-500/15 text-sky-300 border-sky-500/30'
             : 'bg-zinc-500/15 text-zinc-300 border-zinc-500/30';
+
+    // Global keyboard listener for reaction controls
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.code === 'Space') {
+                // Don't trigger if typing in an input
+                if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+                e.preventDefault();
+                if (activeWindow && !reactionTriggered) {
+                    triggerReaction();
+                }
+            }
+            if (e.code === 'Escape') {
+                if (reactionTriggered) {
+                    resetReaction();
+                }
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [activeWindow, reactionTriggered, triggerReaction, resetReaction]);
 
     const handleConfirmMove = () => {
         if (selectedEntity && uiState.pendingMoveCoords) {
@@ -32,6 +69,18 @@ export const HUD: React.FC = () => {
         <div className="absolute inset-0 pointer-events-none flex flex-col">
             {/* Tick Timeline - spans full top */}
             <TickMeter />
+
+            {/* Test Toolbox overlay */}
+            {showToolbox && <TestToolbox onClose={() => setShowToolbox(false)} />}
+
+            {/* Hook Editor overlay */}
+            <HookEditor show={showHookEditor} onClose={() => setShowHookEditor(false)} />
+
+            {/* Reaction Countdown */}
+            <ReactionCountdown />
+
+            {/* Tactical Decision Panel */}
+            <TacticalDecisionPanel />
 
             {/* Main HUD content */}
             <div className="flex-1 flex flex-col justify-between p-3">
@@ -47,7 +96,7 @@ export const HUD: React.FC = () => {
                                 <span>{permission.role}</span>
                                 <span className="text-[9px] opacity-70">{permission.source}</span>
                             </div>
-                            
+
                             {selectedEntity ? (
                                 <div className="mt-2 pt-2 border-t border-zinc-800">
                                     <div className="flex items-center justify-between gap-2 mb-1">
@@ -120,13 +169,13 @@ export const HUD: React.FC = () => {
                                 <p className="text-xs">Click map to set path</p>
                             </div>
                             <div className="flex gap-2">
-                                <button 
+                                <button
                                     onClick={() => resetUiState()}
                                     className="px-3 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-medium transition-colors"
                                 >
                                     Cancel
                                 </button>
-                                <button 
+                                <button
                                     onClick={handleConfirmMove}
                                     disabled={!uiState.pendingMoveCoords}
                                     className="px-3 py-1.5 rounded bg-amber-600 hover:bg-amber-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-medium transition-colors"
@@ -140,72 +189,37 @@ export const HUD: React.FC = () => {
 
                 {/* Bottom Tools */}
                 <div className="flex justify-between items-end pb-2">
-                    {/* Empty placeholder to keep center alignment */}
-                    <div className="w-10"></div>
-                    
-                    {/* Action buttons */}
-                    <div className={`bg-zinc-900/90 border border-zinc-700 p-1.5 rounded-xl pointer-events-auto backdrop-blur-md flex gap-1.5 ${uiState.mode !== 'IDLE' ? 'opacity-30 pointer-events-none' : ''}`}>
-                        <button 
-                            onClick={() => selectedEntity && IntentDispatcher.dispatchCastAction(selectedEntity.id, 'HEAVY_STRIKE')}
-                            disabled={!canAct}
-                            className="w-10 h-10 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-600 transition-colors flex items-center justify-center text-white text-sm font-bold group relative disabled:opacity-30 disabled:cursor-not-allowed"
-                            title="Heavy Strike"
-                        >
-                            1
-                            <span className="absolute -top-7 bg-black/80 px-2 py-0.5 rounded text-[10px] opacity-0 group-hover:opacity-100 whitespace-nowrap">Heavy Strike</span>
-                        </button>
-                        <button 
-                            onClick={() => selectedEntity && setUiMode('SELECT_MOVE_TARGET')}
-                            disabled={!canAct}
-                            className="w-10 h-10 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-amber-600/50 transition-colors flex items-center justify-center text-amber-400 text-sm font-bold group relative disabled:opacity-30 disabled:cursor-not-allowed"
-                            title="Move"
-                        >
-                            2
-                            <span className="absolute -top-7 bg-black/80 px-2 py-0.5 rounded text-[10px] opacity-0 group-hover:opacity-100 whitespace-nowrap text-white">Move</span>
-                        </button>
-                        <button 
-                            onClick={() => selectedEntity && IntentDispatcher.dispatchCastAction(selectedEntity.id, 'FIRE_STORM')}
-                            disabled={!canAct}
-                            className="w-10 h-10 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-600 transition-colors flex items-center justify-center text-orange-400 text-sm font-bold group relative disabled:opacity-30 disabled:cursor-not-allowed"
-                            title="Fire Storm"
-                        >
-                            3
-                            <span className="absolute -top-7 bg-black/80 px-2 py-0.5 rounded text-[10px] opacity-0 group-hover:opacity-100 whitespace-nowrap text-white">Fire Storm</span>
-                        </button>
+                    {/* Test Toolbox toggle */}
+                    <div className="pointer-events-auto">
                         <button
-                            onClick={() => {
-                                if (!canAct || permission.role !== 'GM') return;
-                                const allActors = Object.entries(entities).filter(([_, e]) => e.type === 'ACTOR');
-                                const allIds = allActors.map(([id]) => id);
-                                const batchIntents = allActors.map(([actorId]) => ({
-                                    actorId,
-                                    actionTemplateId: 'SYNC_TEST',
-                                    targetIds: allIds.filter(id => id !== actorId)
-                                }));
-                                IntentDispatcher.dispatchBatchCast(batchIntents);
-                            }}
-                            disabled={permission.role !== 'GM'}
-                            className="w-10 h-10 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-purple-500/30 transition-colors flex items-center justify-center text-purple-400 text-sm font-bold group relative disabled:opacity-30 disabled:cursor-not-allowed"
-                            title="All actors cast SYNC_TEST simultaneously (overlapping)"
+                            onClick={() => setShowToolbox(!showToolbox)}
+                            className={`flex items-center justify-center p-3 rounded-full transition-all shadow-lg ${
+                                showToolbox
+                                ? 'bg-rose-600 text-white shadow-rose-600/30'
+                                : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'
+                            }`}
+                            title="测试工具箱"
                         >
-                            S
-                            <span className="absolute -top-7 bg-black/80 px-2 py-0.5 rounded text-[10px] opacity-0 group-hover:opacity-100 whitespace-nowrap text-white">Sync Test (Overlap)</span>
+                            {/* Wrench icon */}
+                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+                            </svg>
                         </button>
-                        {/* Cancel action button — shown when selected entity is busy */}
-                        {selectedEntity?.currentActionContext && (
-                            <button
-                                onClick={() => IntentDispatcher.dispatchCancelAction(selectedEntity.id)}
-                                className="w-10 h-10 rounded-lg bg-red-900/50 hover:bg-red-800/70 border border-red-500/50 transition-colors flex items-center justify-center text-red-400 text-sm font-bold group relative"
-                                title="Cancel current action"
-                            >
-                                ✕
-                                <span className="absolute -top-7 bg-black/80 px-2 py-0.5 rounded text-[10px] opacity-0 group-hover:opacity-100 whitespace-nowrap text-white">Cancel</span>
-                            </button>
-                        )}
                     </div>
 
-                    {/* Camera Control */}
-                    <CameraControl />
+                    {/* Action buttons (extracted to ActionBar) */}
+                    <ActionBar
+                        selectedEntity={selectedEntity}
+                        canAct={canAct}
+                        uiState={uiState}
+                        onOpenHookEditor={() => setShowHookEditor(true)}
+                    />
+
+                    {/* Right side: Priority toggles + Camera */}
+                    <div className="flex items-end gap-2">
+                        <PriorityToggles />
+                        <CameraControl />
+                    </div>
                 </div>
             </div>
         </div>
@@ -227,7 +241,7 @@ const CameraControl: React.FC = () => {
                 }`}
                 title={cameraMode ? 'Exit Camera Mode' : 'Enter Camera Mode'}
             >
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinelinejoin="round">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
                     <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
                     <line x1="12" y1="22.08" x2="12" y2="12"></line>

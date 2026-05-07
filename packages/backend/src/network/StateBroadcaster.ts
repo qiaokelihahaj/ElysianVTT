@@ -36,6 +36,30 @@ export class StateBroadcaster {
             this.io.to(sceneId).emit('ENTITY_DIED', { entityId: entity.id });
         });
 
+        engine.on('DECISION_POLL', async (payload) => {
+            // DECISION_POLL 需要定向发送给控制该实体的玩家
+            try {
+                const sockets = await this.io.in(sceneId).fetchSockets();
+                for (const socket of sockets) {
+                    const state = socket.data as any;
+                    // GM 角色接收所有决策投票；PL 角色仅接收其控制实体的投票
+                    if (state.role === 'GM') {
+                        socket.emit('DECISION_POLL', payload);
+                        continue;
+                    }
+                    const controlledIds: string[] =
+                        state.permissionSnapshot?.controllableEntities ??
+                        state.permissionSubject?.controlledEntityIds ??
+                        [];
+                    if (controlledIds.includes(payload.actorId)) {
+                        socket.emit('DECISION_POLL', payload);
+                    }
+                }
+            } catch (err) {
+                logger.error('Failed to route DECISION_POLL', err, { sceneId });
+            }
+        });
+
         logger.info(`Engine events wired for scene ${sceneId}`, { sceneId });
     }
 

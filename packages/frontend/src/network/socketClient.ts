@@ -1,11 +1,13 @@
 import { io, Socket } from 'socket.io-client';
-import type { ClientIntent, StateMutationPayload, VisualEventPayload, ActionScheduledPayload } from '@hard-vtt/shared';
+import type { ClientIntent, StateMutationPayload, VisualEventPayload, ActionScheduledPayload, DecisionPollPayload, DecisionResponsePayload } from '@hard-vtt/shared';
 
 const SOCKET_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3000';
 
 class SocketClient {
     private socket: Socket;
     private _authFailedCallbacks: Array<(response: any) => void> = [];
+    /** 当为 true 时，跳过 App.tsx 的自动 joinScene（用于身份切换） */
+    public skipAutoJoin = false;
 
     constructor() {
         this.socket = io(SOCKET_URL, {
@@ -61,17 +63,45 @@ class SocketClient {
         });
     }
 
-    public joinScene(sceneId: string) {
-        this.socket.emit('JOIN_SCENE', { sceneId });
-        console.log(`[Socket] Requested to join scene: ${sceneId}`);
+    public joinScene(sceneId: string, actorId?: string) {
+        this.socket.emit('JOIN_SCENE', { sceneId, actorId });
+        console.log(`[Socket] Requested to join scene: ${sceneId} as ${actorId ?? 'guest'}`);
     }
 
     public leaveScene() {
         this.socket.emit('LEAVE_SCENE');
     }
 
+    /**
+     * 请求场景重新同步（RESYNC → SCENE_SYNC）
+     */
+    public resync() {
+        this.socket.emit('RESYNC');
+    }
+
     public sendIntent(intent: ClientIntent) {
         this.socket.emit('CLIENT_INTENT', intent);
+    }
+
+    /**
+     * Ping 延迟测试：发送 PING 事件并测量往返时间
+     * @returns 延迟毫秒数，超时或失败返回 -1
+     */
+    public ping(timeout = 3000): Promise<number> {
+        return new Promise((resolve) => {
+            const t0 = performance.now();
+            const timer = setTimeout(() => resolve(-1), timeout);
+
+            this.socket.emit('PING', { t: t0 }, (response: any) => {
+                clearTimeout(timer);
+                if (response?.ok) {
+                    const latency = Math.round(performance.now() - t0);
+                    resolve(latency);
+                } else {
+                    resolve(-1);
+                }
+            });
+        });
     }
 
     public onAuthSuccess(callback: (response: any) => void) {
@@ -121,6 +151,17 @@ class SocketClient {
     }
     public offActionScheduled(callback: (payload: ActionScheduledPayload) => void) {
         this.socket.off('ACTION_SCHEDULED', callback);
+    }
+
+    public onDecisionPoll(callback: (payload: DecisionPollPayload) => void) {
+        this.socket.on('DECISION_POLL', callback);
+    }
+    public offDecisionPoll(callback: (payload: DecisionPollPayload) => void) {
+        this.socket.off('DECISION_POLL', callback);
+    }
+
+    public sendDecisionResponse(payload: DecisionResponsePayload) {
+        this.socket.emit('DECISION_RESPONSE', payload);
     }
 }
 

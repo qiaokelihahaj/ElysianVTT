@@ -76,15 +76,26 @@ export class EffectSystem {
 
         switch (effect.type) {
             case 'DAMAGE': {
+                let effectiveAmount = amount;
+                const ignoreDr = effect.parameters.ignoreDr === true;
+                if (!ignoreDr) {
+                    const dr = target.resources.current.armor ?? target.resources.current.dr ?? 0;
+                    if (dr > 0) {
+                        effectiveAmount = Math.max(0, amount - dr);
+                        if (effectiveAmount !== amount) {
+                            logger.game(`🛡️ [DR] ${target.id} 的护甲减免了 ${amount - effectiveAmount} 点伤害 (DR=${dr})`, null, LogVisibility.PLAYER, engineCtx);
+                        }
+                    }
+                }
                 const currentVal = target.resources.current[resKey] || 0;
-                const newVal = Math.max(0, currentVal - amount);
+                const newVal = Math.max(0, currentVal - effectiveAmount);
                 target.resources.current[resKey] = newVal;
-                
+
                 recordChange(target.id, `resources.current.${resKey}`, newVal);
-                
+
                 logger.game(
-                    `[${actor.id}] 施放了 [${template.id}] 造成 ${amount} 点伤害`,
-                    { actionId: template.id, targetId: target.id, damage: amount },
+                    `[${actor.id}] 施放了 [${template.id}] 造成 ${effectiveAmount} 点伤害`,
+                    { actionId: template.id, targetId: target.id, damage: effectiveAmount },
                     LogVisibility.PLAYER,
                     engineCtx
                 );

@@ -1,6 +1,6 @@
 import { socketClient } from './socketClient';
 import { useGameStore } from '../store/gameStore';
-import type { EntityId, Vector3D, ClientIntent } from '@hard-vtt/shared';
+import type { EntityId, Vector3D, ClientIntent, HookPreset, PlayerPriorityToggle } from '@hard-vtt/shared';
 
 export class IntentDispatcher {
     /**
@@ -80,5 +80,29 @@ export class IntentDispatcher {
         };
         socketClient.sendIntent(intent);
         console.log('[IntentDispatcher] 发送取消意图 (CANCEL_ACTION):', intent);
+    }
+
+    /**
+     * 分发 Hook 预设指令（添加/更新）
+     */
+    public static dispatchHookPreset(actorId: EntityId, preset: HookPreset) {
+        const intent: ClientIntent = {
+            ...this.createBaseIntent(actorId, 'HOOK_PRESET'),
+            payload: { hookPreset: preset }
+        };
+        socketClient.sendIntent(intent);
+        console.log('[IntentDispatcher] 发送 Hook 预设 (HOOK_PRESET):', intent);
+    }
+
+    /**
+     * 分发优先级切换指令
+     */
+    public static dispatchPriorityToggle(actorId: EntityId, mode: PlayerPriorityToggle) {
+        const intent: ClientIntent = {
+            ...this.createBaseIntent(actorId, 'PRIORITY_TOGGLE'),
+            payload: { toggleMode: mode }
+        };
+        socketClient.sendIntent(intent);
+        console.log('[IntentDispatcher] 发送优先级切换 (PRIORITY_TOGGLE):', intent);
     }
 }

@@ -191,6 +191,15 @@ export class PermissionService {
                     return this.reject('UNAUTHORIZED', '当前主体没有交互权限', snapshot);
                 }
                 break;
+            case 'CANCEL_ACTION':
+            case 'DEFEND':
+            case 'DODGE':
+            case 'REACTION':
+            case 'MICRO_EVADE':
+            case 'PRIORITY_TOGGLE':
+            case 'HOOK_PRESET':
+                // 这些类型的意图仅需 entity 控制权检查（已在上面完成）
+                break;
             default:
                 return this.reject('INVALID_INTENT', `Unknown intent type: ${intent.intentType}`, snapshot);
         }

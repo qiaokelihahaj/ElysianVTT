@@ -32,6 +32,51 @@ export interface PhysicsBody {
 // ==========================================
 export type EntityId = string;
 
+// AttackTag 用于微闪避系统（micro-evasion）的攻击标签
+export type AttackTag = 'HIGH' | 'LOW' | 'LINEAR';
+
+// RulePack data-driven rule definitions
+export interface RulePackDefs {
+  id: string;
+  name: string;
+  description?: string;
+  attributeDefs: AttributeDef[];
+  resourceDefs: ResourceDef[];
+  phaseDefs: PhaseDef[];
+  defenseModel: DefenseModel;
+}
+
+export interface AttributeDef {
+  key: string;
+  label: string;
+  default: number;
+  min?: number;
+  max?: number;
+}
+
+export interface ResourceDef {
+  key: string;
+  label: string;
+  default: number;
+  min: number;
+  max?: number;
+  sustain?: boolean;  // if true, resource must stay >0 during channeling
+}
+
+export interface PhaseDef {
+  key: 'DELAY' | 'STARTUP' | 'ACTIVE' | 'RECOVERY';
+  label: string;
+  canInterrupt: boolean;
+  canReact: boolean;
+}
+
+export interface DefenseModel {
+  drFormula?: string;       // e.g., "max(0, armor - penetration)"
+  parryFormula?: string;    // e.g., "agi * 2 + 10"
+  dodgeFormula?: string;    // e.g., "agi * 1.5 + 5"
+  interceptFormula?: string;
+}
+
 // ResourcePool 标准资源键: poise (PP/韧性) 和 focus (FP/专注)
 // 引擎层不硬编码具体资源语义，由数据模板定义
 export interface ResourcePool {
@@ -54,6 +99,11 @@ export interface Entity {
     
     transform: Transform;
     physics: PhysicsBody;
+    defenses?: {
+        dr: number;        // Damage Reduction (flat)
+        parry: number;     // Parry defense value
+        dodge: number;     // Dodge defense value
+    };
     resources: ResourcePool;
     activeEffects: AppliedEffect[];
     
@@ -78,10 +128,11 @@ export interface Entity {
 export type ExpressionString = string;
 
 export interface ActionTemplate {
-    id: string;              
-    tags: string[];          
+    id: string;
+    tags: string[];
+    attackTags?: AttackTag[];  // Attack type tags for micro-evasion
     timeCost: { startupTicks: number; recoveryTicks: number; };
-    resourceCost: Record<string, ExpressionString>; 
+    resourceCost: Record<string, ExpressionString>;
     range: { type: string; distanceExpr: ExpressionString; radiusExpr?: ExpressionString; };
     effects: ActionEffectPayload[];
     diceRules?: DiceRule[];
@@ -92,13 +143,14 @@ export interface ActionTemplate {
         maxPulses?: number;           // 最大触发次数（不填则无限，直到资源耗尽或手动取消）
         pulseResourceCost?: Record<string, ExpressionString>;  // 每次脉冲额外消耗
     };
+    rulePackId?: string;
 }
 
 export interface ActionEffectPayload {
     type: 'DAMAGE' | 'HEAL' | 'APPLY_BUFF' | 'PUSH' | 'INTERRUPT';
     targetSelector: 'PRIMARY' | 'ALL_IN_AOE' | 'SELF';
-    conditions?: ExpressionString[]; 
-    parameters: Record<string, any>;
+    conditions?: ExpressionString[];
+    parameters: Record<string, any>;  // Supported keys: amount, formula, ignoreDr (boolean), pushDistance, etc.
 }
 
 // ==========================================
@@ -174,6 +226,8 @@ export interface ActionExecutionEvent extends TickEvent {
     targetIds?: EntityId[];
     actionTemplateId: string;
     phase: 'DELAY' | 'STARTUP' | 'ACTIVE' | 'RECOVERY';
+    whiffed?: boolean;
+    punishBonus?: number;
 }
 
 export interface MovementStepEvent extends TickEvent {
@@ -205,7 +259,9 @@ export interface IEngineInstance {
 // ==========================================
 export interface ClientIntent {
     actorId: EntityId;
-    intentType: 'CAST_ACTION' | 'MOVE' | 'INTERACT' | 'CANCEL_ACTION' | 'BATCH_CAST';
+    intentType: 'CAST_ACTION' | 'MOVE' | 'INTERACT' | 'CANCEL_ACTION' | 'BATCH_CAST'
+        | 'DEFEND' | 'DODGE' | 'REACTION' | 'MICRO_EVADE'
+        | 'PRIORITY_TOGGLE' | 'GAMBIT_PRESET' | 'HOOK_PRESET';
     clientTick: Tick;
     payload: {
         actionTemplateId?: string;
@@ -213,6 +269,12 @@ export interface ClientIntent {
         targetCoords?: Vector3D;
         cancelSubType?: 'DELAY_CANCEL' | 'FORCE_CANCEL';
         batchIntents?: Array<{ actorId: EntityId; actionTemplateId: string; targetIds?: EntityId[] }>;
+        defendSubType?: 'PARRY' | 'BLOCK';
+        evadeSubType?: 'DUCK' | 'HOP' | 'SLIP';
+        reactionTargetId?: EntityId;
+        toggleMode?: PlayerPriorityToggle;
+        hookPreset?: HookPreset;
+        gambitPreset?: { actionTemplateId: string; condition: HookTrigger };
     };
 }
 
@@ -228,7 +290,7 @@ export interface VisualEventPayload {
     tick: Tick;
     events: Array<{
         eventId: string;
-        eventType: 'FX_SPAWN' | 'ANIM_PLAY' | 'SOUND_PLAY' | 'UI_FLOATING_TEXT' | 'MUTUAL_KILL' | 'INTERRUPTED';
+        eventType: 'FX_SPAWN' | 'ANIM_PLAY' | 'SOUND_PLAY' | 'UI_FLOATING_TEXT' | 'MUTUAL_KILL' | 'INTERRUPTED' | 'REACTION_AVAILABLE' | 'WHIFF' | 'DECISION_POLL';
         sourceId: EntityId;
         targetId?: EntityId;
         targetCoords?: Vector3D;
@@ -251,3 +313,66 @@ export interface ActionScheduledPayload {
     };
     tags?: string[];
 }
+
+// ==========================================
+// 6. 决策窗口系统 (Decision Window)
+// ==========================================
+
+export interface DecisionPollPayload {
+  windowId: string;
+  windowType: 'ACTIVE' | 'REACTION';
+  actorId: EntityId;
+  sourceAction?: { actorId: EntityId; actionName: string; startupRemainingTicks: number };
+  countdownMs: number;
+  availableOptions: DecisionOption[];
+  tick: Tick;
+}
+
+export interface DecisionOption {
+  id: string;
+  label: string;
+  resourceCost: Record<string, number>;
+  canAfford: boolean;
+}
+
+export interface DecisionResponsePayload {
+  windowId: string;
+  chosenOptionId: string | null;
+  targetCoords?: Vector3D;
+}
+
+export type PlayerPriorityToggle = 'PASS_ALL' | 'TARGET_ONLY' | 'FULL_CONTROL';
+
+export interface HookPreset {
+  id: string;
+  entityId: EntityId;
+  label: string;
+  trigger: HookTrigger;
+  enabled: boolean;
+}
+
+export type HookSource = 'MANUAL' | 'SYSTEM';
+
+// 扩展 HookPreset 以支持系统钩子
+export interface UnifiedHook extends HookPreset {
+  source: HookSource;
+  createdAtTick: Tick;
+  ttl: number;        // 生存 tick 数，0=永久
+  fired: boolean;
+}
+
+export type HookTrigger =
+  | { type: 'ENTITY_MOVES_TO'; targetHex: HexCoord }
+  | { type: 'ENTITY_ENTERS_AREA'; center: Vector3D; radius: number }
+  | { type: 'ACTION_PHASE_DELAY'; sourceEntityId: EntityId; actionTemplateId: string; delayTicks: number }
+  | { type: 'ENEMY_CASTS_SPELL'; sourceFilter?: string }
+  | { type: 'ENEMY_ENTERS_RANGE'; range: number; originEntityId?: EntityId }
+  | { type: 'TICK_REACHED'; targetTick: Tick };
+
+// ==========================================
+// 7. Socket 事件常量
+// ==========================================
+export const SOCKET_EVENTS = {
+  DECISION_POLL: 'DECISION_POLL',
+  DECISION_RESPONSE: 'DECISION_RESPONSE',
+} as const;

@@ -20,6 +20,14 @@ export class TickLoop {
     }
 
     /**
+     * 窥视下一个事件的 targetTick（不弹出）
+     */
+    public peekNextTick(): Tick | null {
+        const event = this.queue.peek();
+        return event ? event.targetTick : null;
+    }
+
+    /**
      * 单步推进：跃迁到下一个有事件的 Tick，收集同 Tick 事件并返回
      * 
      * @returns 该 Tick 下所有事件（已从优先队列弹出），以及到达的 Tick

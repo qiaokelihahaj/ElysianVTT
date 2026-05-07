@@ -1,6 +1,5 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { useGameStore } from '../../store/gameStore';
-import type { ActionScheduledPayload } from '@hard-vtt/shared';
 
 const LANE_COLORS = [
     { bar: '#ff6b35', dot: '#ff6b35', text: '#fff' },
@@ -104,7 +103,6 @@ export const TickMeter: React.FC = () => {
             let width = tickOffset(t.end) - left;
             if (width < 8) width = 8; // minimum visible width
 
-            const startupLeft = left;
             const startupWidth = tickOffset(t.startupEnd) - left;
 
             const lastPulse = t.pulseTicks?.[t.pulseTicks.length - 1] ?? t.startupEnd;

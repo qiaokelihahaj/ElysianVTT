@@ -432,12 +432,7 @@ export class RendererManager {
         if (visual.imageUrl) {
             const sprite = Sprite.from(visual.imageUrl);
             sprite.anchor.set(0.5);
-            sprite.eventMode = 'static';
-            sprite.cursor = 'pointer';
-            sprite.on('pointerdown', (e) => {
-                e.stopPropagation();
-                useGameStore.getState().setSelectedEntityId(id);
-            });
+            this.attachEntityInteraction(sprite, id);
             this.syncEntitySpriteAppearance(sprite, visual, isSelected);
             return sprite;
         }
@@ -474,7 +469,29 @@ export class RendererManager {
         target.on('pointerdown', (e) => {
             e.stopPropagation();
             useGameStore.getState().setSelectedEntityId(id);
+            if (useGameStore.getState().centerOnEntity) {
+                this.centerOnEntity(id);
+            }
         });
+    }
+
+    /**
+     * 将镜头中心移动到指定实体位置
+     * 根据实体的六边形偏移坐标转换为像素坐标，计算使实体位于屏幕中心的 cameraX/Y
+     */
+    public centerOnEntity(entityId: string) {
+        const state = useGameStore.getState();
+        const entity = state.entities[entityId];
+        if (!entity || !this.app) return;
+
+        const pos = hexToPixel(entity.transform.coords.x, entity.transform.coords.y);
+        const screenCenterX = this.app.screen.width / 2;
+        const screenCenterY = this.app.screen.height / 2;
+
+        this.cameraX = screenCenterX - pos.x * this.zoom;
+        this.cameraY = screenCenterY - pos.y * this.zoom;
+        this.cameraContainer.x = this.cameraX;
+        this.cameraContainer.y = this.cameraY;
     }
 
     // ============================================================

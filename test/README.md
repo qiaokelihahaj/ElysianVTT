@@ -50,6 +50,16 @@ npx tsx frontend-store.test.ts
 |------|------|--------|-------|
 | **`core.test.ts`** | 引擎核心逻辑 | PriorityQueue、RuleEvaluator、CombatEngine、DiceRolling | ~30+ |
 | **`backend-utils.test.ts`** | 工具函数 | PriorityQueue、SafeJsonParser、IdGenerator | ~10+ |
+| **`tickloop.test.ts`** | TickLoop 步进器 | 单步/多步/空堆/取消事件 | ~15+ |
+| **`clashpool.test.ts`** | 同 Tick 冲突池 | 优先级分组、相杀二阶段提交 | ~20+ |
+| **`interrupt.test.ts`** | 动作打断 | 打断条件、消耗计算 | ~15+ |
+| **`channel.test.ts`** | Channeling 引导 | 每脉冲消耗、中断 | ~10+ |
+| **`movement.test.ts`** | 移动系统 | 路径规划、插值、碰撞 | ~15+ |
+| **`engine.integration.test.ts`** | 引擎集成 | 完整战斗流程 | ~10+ |
+| **`auth.test.ts`** | 认证系统 | Token 生成/验证/登出 | ~15+ |
+| **`permission.test.ts`** | 权限系统 | GM/PL/OB 授权规则 + 快照持久化 | ~25+ |
+| **`visibility-and-logs.test.ts`** | 可见性与日志 | VisibilityFilter、日志审计 | ~10+ |
+| **`security-regression.test.ts`** | 安全回归 | 权限端点、Token 失效 | ~10+ |
 
 ### 前端测试
 
@@ -137,29 +147,19 @@ npm install
 pnpm install
 ```
 
-### 命令别名建议
-
-在 `package.json` 中添加 npm scripts（可选）：
-```json
-{
-  "scripts": {
-    "test": "tsx *.test.ts",
-    "test:backend": "tsx core.test.ts backend-utils.test.ts",
-    "test:frontend": "tsx frontend-*.test.ts",
-    "test:watch": "tsx --watch *.test.ts",
-    "test:core": "tsx core.test.ts",
-    "test:utils": "tsx frontend-utils.test.ts",
-    "test:intent": "tsx frontend-intent.test.ts",
-    "test:store": "tsx frontend-store.test.ts"
-  }
-}
+### 运行安全测试
+```bash
+# 安全测试统一入口（依次执行 auth / permission / visibility / security）
+npx tsx security-suite.runner.ts
 ```
 
-然后运行：
+### 命令别名
+
 ```bash
-npm run test          # 运行所有
-npm run test:backend  # 仅后端
-npm run test:frontend # 仅前端
+# 通过 test/package.json 运行
+pnpm test:unit          # clashpool + interrupt
+pnpm test:integration   # engine.integration
+pnpm test:security      # 安全测试入口
 ```
 
 ---
@@ -448,6 +448,14 @@ A: 可以注释掉 `test()` 调用，但不建议在提交代码时跳过。
 | `frontend-utils.test.ts` | ✅ | 14/14 |
 | `frontend-intent.test.ts` | ✅ | 29/29 |
 | `frontend-store.test.ts` | ✅ | 25/25 |
+| `clashpool.test.ts` | ✅ | 100% |
+| `tickloop.test.ts` | ✅ | 100% |
+| `interrupt.test.ts` | ✅ | 100% |
+| `channel.test.ts` | ✅ | 100% |
+| `movement.test.ts` | ✅ | 100% |
+| `engine.integration.test.ts` | ✅ | 100% |
+| `auth.test.ts` | ✅ | 100% |
+| `permission.test.ts` | ✅ | 100% |
 
 ## 📝 开发指南
 

@@ -66,7 +66,7 @@ function runTests() {
     console.log('[Test 1] 战士快速斩 + 法师火球术 — 验证 Timeline 数据');
     const engine = new CombatEngine('test-2p-1');
     const warrior = makeActor('warrior', '战士');
-    const mage = makeActor('mage', '法师', 3, 0);
+    const mage = makeActor('mage', '法师', 1, 0);
     engine.mountEntities([warrior, mage]);
 
     const scheduledActions: ActionScheduledPayload[] = [];
@@ -100,22 +100,22 @@ function runTests() {
       assert(t.startupEnd === 5, `战士 startupEnd=5 (实际 ${t.startupEnd})`);
       assert(t.pulseTicks?.length === 1, `战士 pulseTicks 长度=1 (实际 ${t.pulseTicks?.length})`);
       assert(t.pulseTicks![0] === 5, `战士 pulseTicks[0]=5 (实际 ${t.pulseTicks![0]})`);
-      assert(t.end === 8, `战士 end=8 (实际 ${t.end})`);  // activeTick(5) + recoveryTicks(3) = 8
+      assert(t.end === 9, `战士 end=9 (实际 ${t.end})`);  // activeTick(5) + 1 + recoveryTicks(3) = 9
       assert(t.recoveryStart === 6, `战士 recoveryStart=6 (实际 ${t.recoveryStart})`);  // lastPulse(5) + 1
-      // 恢复条宽度 = end - recoveryStart = 8 - 6 = 2 = recoveryTicks(3) - 1 ✓
-      assert(t.end - t.recoveryStart === 2, `战士恢复条宽度=2 (期望 ${t.recoveryStart}→${t.end})`);
+      // 恢复条宽度 = end - recoveryStart = 9 - 6 = 3 = recoveryTicks(3) ✓
+      assert(t.end - t.recoveryStart === 3, `战士恢复条宽度=3 (期望 ${t.recoveryStart}→${t.end})`);
     }
 
     if (mageAction) {
-      // receiveIntent 同步执行 processQueue，战士动作(0-8)完成后法师才开始
-      // 所以 mage start = 战士执行完的 tick(8)
+      // receiveIntent 同步执行 processQueue，战士动作(0-9)完成后法师才开始
+      // 所以 mage start = 战士执行完的 tick(9)
       const t = mageAction.timeline;
-      assert(t.start === 8, `法师 start=8 (实际 ${t.start})`);
-      assert(t.startupEnd === 16, `法师 startupEnd=16 (实际 ${t.startupEnd})`);  // 8+8
-      assert(t.pulseTicks![0] === 16, `法师 pulseTicks[0]=16 (实际 ${t.pulseTicks![0]})`);
-      assert(t.end === 22, `法师 end=22 (实际 ${t.end})`);  // 16+6
-      assert(t.recoveryStart === 17, `法师 recoveryStart=17 (实际 ${t.recoveryStart})`);
-      assert(t.end - t.recoveryStart === 5, `法师恢复条宽度=5 (期望 ${t.recoveryStart}→${t.end})`);
+      assert(t.start === 9, `法师 start=9 (实际 ${t.start})`);
+      assert(t.startupEnd === 17, `法师 startupEnd=17 (实际 ${t.startupEnd})`);  // 9+8
+      assert(t.pulseTicks![0] === 17, `法师 pulseTicks[0]=17 (实际 ${t.pulseTicks![0]})`);
+      assert(t.end === 24, `法师 end=24 (实际 ${t.end})`);  // 17+1+6
+      assert(t.recoveryStart === 18, `法师 recoveryStart=18 (实际 ${t.recoveryStart})`);
+      assert(t.end - t.recoveryStart === 6, `法师恢复条宽度=6 (期望 ${t.recoveryStart}→${t.end})`);
     }
   }
 
@@ -152,10 +152,10 @@ function runTests() {
     assert(t.pulseTicks![2] === 10, `pulseTicks[2]=10 (实际 ${t.pulseTicks![2]})`);
     // recoveryStart = lastPulse + 1 = 10 + 1 = 11
     assert(t.recoveryStart === 11, `recoveryStart=11 (实际 ${t.recoveryStart})`);
-    // endTick = lastPulseTick + recoveryTicks = 10 + 4 = 14
-    assert(t.end === 14, `end=14 (实际 ${t.end})`);
-    // 恢复条宽度 = 14 - 11 = 3 = recoveryTicks(4) - 1 ✓
-    assert(t.end - t.recoveryStart === 3, `恢复条宽度=3`);
+    // endTick = lastPulseTick + 1 + recoveryTicks = 10 + 1 + 4 = 15
+    assert(t.end === 15, `end=15 (实际 ${t.end})`);
+    // 恢复条宽度 = 15 - 11 = 4 = recoveryTicks(4) ✓
+    assert(t.end - t.recoveryStart === 4, `恢复条宽度=4`);
   }
 
   // ------------------------------------------------------------------
@@ -247,14 +247,14 @@ function runTests() {
     // hero_a 从 tick 0 开始
     assert(ta.start === 0, `hero_a start=0 (实际 ${ta.start})`);
     assert(ta.startupEnd === 5, `hero_a startupEnd=5 (实际 ${ta.startupEnd})`);
-    assert(ta.end === 8, `hero_a end=8 (实际 ${ta.end})`);
+    assert(ta.end === 9, `hero_a end=9 (实际 ${ta.end})`);  // 5+1+3
     assert(ta.recoveryStart === 6, `hero_a recoveryStart=6 (实际 ${ta.recoveryStart})`);
 
-    // hero_b 从 hero_a 结束后开始 (tick 8)
-    assert(tb.start === 8, `hero_b start=8 (实际 ${tb.start})`);
-    assert(tb.startupEnd === 13, `hero_b startupEnd=13 (实际 ${tb.startupEnd})`);
-    assert(tb.end === 16, `hero_b end=16 (实际 ${tb.end})`);
-    assert(tb.recoveryStart === 14, `hero_b recoveryStart=14 (实际 ${tb.recoveryStart})`);
+    // hero_b 从 hero_a 结束后开始 (tick 9)
+    assert(tb.start === 9, `hero_b start=9 (实际 ${tb.start})`);
+    assert(tb.startupEnd === 14, `hero_b startupEnd=14 (实际 ${tb.startupEnd})`);  // 9+5
+    assert(tb.end === 18, `hero_b end=18 (实际 ${tb.end})`);  // 14+1+3
+    assert(tb.recoveryStart === 15, `hero_b recoveryStart=15 (实际 ${tb.recoveryStart})`);
   }
 
   // ------------------------------------------------------------------
@@ -350,11 +350,11 @@ function runTests() {
     assert(ta.start === tb.start, `双方 start 重叠 (${ta.start} === ${tb.start})`);
     assert(ta.start === 0, `hero_a start=0 (实际 ${ta.start})`);
     assert(ta.startupEnd === 5, `hero_a startupEnd=5 (实际 ${ta.startupEnd})`);
-    assert(ta.end === 8, `hero_a end=8 (实际 ${ta.end})`);
+    assert(ta.end === 9, `hero_a end=9 (实际 ${ta.end})`);
 
     assert(tb.start === 0, `hero_b start=0 (实际 ${tb.start})`);
     assert(tb.startupEnd === 5, `hero_b startupEnd=5 (实际 ${tb.startupEnd})`);
-    assert(tb.end === 8, `hero_b end=8 (实际 ${tb.end})`);
+    assert(tb.end === 9, `hero_b end=9 (实际 ${tb.end})`);
 
     assert(ta.startupEnd === tb.startupEnd, '双方 startupEnd 重叠');
     assert(ta.end === tb.end, '双方 end 重叠');

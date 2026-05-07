@@ -1,11 +1,14 @@
 import React, { useState } from 'react';
 import { useGameStore } from '../../store/gameStore';
+import { RendererManager } from '../../canvas/RendererManager';
 import type { Entity } from '@hard-vtt/shared';
 
 export const EntityList: React.FC = () => {
     const entities = useGameStore(state => state.entities);
     const selectedEntityId = useGameStore(state => state.selectedEntityId);
     const setSelectedEntityId = useGameStore(state => state.setSelectedEntityId);
+    const centerOnEntity = useGameStore(state => state.centerOnEntity);
+    const setCenterOnEntity = useGameStore(state => state.setCenterOnEntity);
     const [isCollapsed, setIsCollapsed] = useState(false);
 
     // 分类实体
@@ -19,7 +22,12 @@ export const EntityList: React.FC = () => {
         return (
             <button
                 key={entity.id}
-                onClick={() => setSelectedEntityId(entity.id)}
+                onClick={() => {
+                    setSelectedEntityId(entity.id);
+                    if (centerOnEntity) {
+                        RendererManager.getInstance().centerOnEntity(entity.id);
+                    }
+                }}
                 className={`w-full text-left p-2 rounded transition-all ${
                     isSelected
                         ? 'bg-amber-900/60 border border-amber-500/50'
@@ -73,13 +81,27 @@ export const EntityList: React.FC = () => {
                 <h3 className="text-sm font-bold text-zinc-300">
                     Scene Entities
                 </h3>
-                <button
-                    onClick={() => setIsCollapsed(true)}
-                    className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
-                    title="Collapse"
-                >
-                    −
-                </button>
+                <div className="flex items-center gap-2">
+                    <button
+                        onClick={() => setCenterOnEntity(!centerOnEntity)}
+                        className={`text-xs px-2 py-0.5 rounded border transition-colors ${
+                            centerOnEntity
+                                ? 'bg-amber-600/20 border-amber-500/50 text-amber-400'
+                                : 'bg-zinc-800/40 border-zinc-700/50 text-zinc-500 hover:text-zinc-300'
+                        }`}
+                        title={centerOnEntity ? 'Center on click: ON' : 'Center on click: OFF'}
+                    >
+                        <span className="mr-1">{centerOnEntity ? '●' : '○'}</span>
+                        Focus
+                    </button>
+                    <button
+                        onClick={() => setIsCollapsed(true)}
+                        className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+                        title="Collapse"
+                    >
+                        −
+                    </button>
+                </div>
             </div>
 
             {/* Content */}

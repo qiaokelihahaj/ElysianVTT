@@ -99,6 +99,10 @@ function App() {
             const doAuth = () => {
                 socketClient.authenticate(token);
                 socketClient.onAuthSuccess(() => {
+                    if (socketClient.skipAutoJoin) {
+                        console.log('[App] Auth success (skip auto-join for identity switch)');
+                        return;
+                    }
                     console.log('[App] WebSocket authenticated, joining scene:', SCENE_ID);
                     socketClient.joinScene(SCENE_ID);
                 });
@@ -131,16 +135,46 @@ function App() {
             useGameStore.getState().scheduleAction(payload);
         };
 
+        const handleDecisionPoll = (payload: any) => {
+            console.log('[App] Decision Poll:', payload);
+            const store = useGameStore.getState();
+            if (payload.tick !== undefined) {
+                useGameStore.setState({ tick: payload.tick });
+            }
+            store.setActiveWindow(payload);
+            store.setCountdownEnd(Date.now() + payload.countdownMs);
+        };
+
+        const handleJoinSuccess = (payload: any) => {
+            console.log('[App] Join Success:', payload);
+            const snap = payload?.permissionSnapshot;
+            if (snap) {
+                useGameStore.getState().setPermission({
+                    userId: snap.userId ?? '',
+                    role: snap.role ?? 'OB',
+                    source: 'JOIN_SUCCESS',
+                    controlledEntityIds: snap.controllableEntities ?? snap.controlledEntityIds ?? [],
+                    visibleEntityIds: snap.visibleEntities ?? snap.visibleEntityIds ?? [],
+                    capabilities: snap.capabilities ?? ['VIEW_ASSETS', 'VIEW_MAP', 'BROWSE_DICTIONARY', 'SEND_INTENT'],
+                    snapshotVersion: snap.version ?? snap.snapshotVersion ?? Date.now()
+                });
+            }
+        };
+
         socketClient.onStateMutated(handleMutation);
         socketClient.onVisualFx(handleVisualFx);
         socketClient.onSceneSync(handleSceneSync);
         socketClient.onActionScheduled(handleActionScheduled);
+        socketClient.onDecisionPoll(handleDecisionPoll);
+        socketClient.onJoinSuccess(handleJoinSuccess);
 
         return () => {
             socketClient.offStateMutated(handleMutation);
             socketClient.offVisualFx(handleVisualFx);
             socketClient.offSceneSync(handleSceneSync);
             socketClient.offActionScheduled(handleActionScheduled);
+            socketClient.offDecisionPoll(handleDecisionPoll);
+            socketClient.offJoinSuccess(handleJoinSuccess);
             socketClient.disconnect();
         };
     }, []);

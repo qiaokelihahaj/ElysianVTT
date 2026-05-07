@@ -1,7 +1,7 @@
 // packages/backend/src/network/SocketServer.ts
 import { Server, Socket } from 'socket.io';
 import { Server as HttpServer } from 'http';
-import { ClientIntent } from '@hard-vtt/shared';
+import { ClientIntent, DecisionResponsePayload } from '@hard-vtt/shared';
 import { CampaignManager } from '../campaigns/CampaignManager.js';
 import { IntentRouter } from './IntentRouter.js';
 import { PermissionGrantRepository } from '../db/PermissionGrantRepository.js';
@@ -168,6 +168,10 @@ export class SocketServer {
 
                     socketState.permissionSubject = permissionSubject;
 
+                    // 更新权限快照为场景级别（含正确的实体 ID），供 StateBroadcaster 路由 DECISION_POLL 使用
+                    const sceneSnapshot = this.permissionService.buildSnapshot(permissionSubject, sceneId);
+                    socketState.permissionSnapshot = sceneSnapshot;
+
                     socket.join(sceneId);
 
                     socketState.currentSceneId = sceneId;
@@ -247,6 +251,31 @@ export class SocketServer {
                         message: '权限刷新失败'
                     };
                     if (callback) callback(response);
+                }
+            });
+
+            socket.on('PING', (data: { t: number }, callback?: (response: any) => void) => {
+                const response = { ok: true, t: data.t, serverTime: Date.now() };
+                if (callback) callback(response);
+                else socket.emit('PONG', response);
+            });
+
+            socket.on('RESYNC', async () => {
+                const sState = socket.data as SocketSessionState;
+                if (!sState.currentSceneId) return;
+                const engine = await this.campaignManager.getOrCreateEngine(sState.currentSceneId);
+                socket.emit('SCENE_SYNC', {
+                    tick: engine.currentTick,
+                    entities: engine.getAllEntities()
+                });
+            });
+
+            socket.on('DECISION_RESPONSE', async (payload: DecisionResponsePayload) => {
+                const sState = socket.data as SocketSessionState;
+                if (!sState.currentSceneId) return;
+                const engine = await this.campaignManager.getOrCreateEngine(sState.currentSceneId);
+                if (typeof (engine as any).handleDecisionResponse === 'function') {
+                    (engine as any).handleDecisionResponse(payload);
                 }
             });
 

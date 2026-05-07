@@ -7,6 +7,19 @@ datasource db {
   url      = "file:./dev.db"  
 }
 
+// 规则包定义（数据驱动配置）
+model RulePack {
+  id                String   @id       // e.g., 'elysian'
+  name              String
+  description       String?
+  attributeDefsJson String            // JSON array: [{ key: "str", label: "力量", default: 10 }, ...]
+  resourceDefsJson  String            // JSON array: [{ key: "hp", label: "生命", default: 100, min: 0 }, ...]
+  phaseDefsJson     String            // JSON array: [{ key: "STARTUP", label: "前摇", canInterrupt: true }, ...]
+  defenseModelJson  String            // JSON: { drFormula: "max(0, armor - penetration)", parryFormula: "agi * 2 + 10", dodgeFormula: "agi * 1.5 + 5" }
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+}
+
 // 技能/动作模板字典 (冷数据)
 model ActionTemplate {
   id            String @id       // 例如: 'HEAVY_STRIKE'
@@ -17,9 +30,10 @@ model ActionTemplate {
   priorityExpr  String?          // 动态判定优先级公式 (ClashPool 用), 如 "actor.str + actor.reach * 2"
   sustainResourcesJson String?   // STARTUP 阶段必须维持的资源列表 JSON, 如 ["poise"]
   channelOptionsJson String?   // 持续引导/多段动作配置 JSON
-  tagsJson         String? 
+  tagsJson         String?
   resourceCostJson String?
-  rangeJson        String? 
+  rangeJson        String?
+  rulePackId       String?       // optional reference to RulePack
 }
 
 // 角色/怪物档案基础数据 (冷数据)
