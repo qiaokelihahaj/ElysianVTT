@@ -26,6 +26,7 @@ export interface UiState {
 
 interface TacticalState {
     activeWindow: DecisionPollPayload | null;
+    frozenTick: number | null;        // hook 触发时的 tick，决策期间冻结显示
     countdownEnd: number | null;
     reactionTriggered: boolean;
     playerToggle: PlayerPriorityToggle;
@@ -81,6 +82,9 @@ interface GameState {
     setPlayerToggle: (mode: PlayerPriorityToggle) => void;
     addHookPreset: (preset: HookPreset) => void;
     removeHookPreset: (id: string) => void;
+    upsertHookPreset: (hookData: any) => void;
+    removeHookPresetLocal: (id: string) => void;
+    setSyncHookPresets: (presets: any[]) => void;
 }
 
 export const useGameStore = create<GameState>()(
@@ -110,6 +114,7 @@ export const useGameStore = create<GameState>()(
             },
             tactical: {
                 activeWindow: null,
+                frozenTick: null,
                 countdownEnd: null,
                 reactionTriggered: false,
                 playerToggle: 'FULL_CONTROL',
@@ -130,6 +135,7 @@ export const useGameStore = create<GameState>()(
 
         applyStateMutation: (payload: StateMutationPayload) => set((state) => {
             state.tick = payload.tick;
+            console.log(`[Store] tick updated to ${payload.tick}, mutations: ${payload.mutations?.length ?? 0}`);
             
             payload.mutations.forEach(mutation => {
                 const entity = state.entities[mutation.entityId];
@@ -211,27 +217,59 @@ export const useGameStore = create<GameState>()(
             }),
 
             // Tactical Decision Actions
-            setActiveWindow: (window) => set((state) => { state.tactical.activeWindow = window; }),
+            setActiveWindow: (window) => set((state) => {
+                console.log('[STORE] setActiveWindow windowId=', window?.windowId, ', reactionTriggered=', state.tactical.reactionTriggered);
+                state.tactical.activeWindow = window;
+                if (window && typeof window.tick === 'number') {
+                    state.tactical.frozenTick = window.tick;
+                }
+            }),
 
             clearActiveWindow: () => set((state) => {
+                console.log('[STORE] clearActiveWindow called', new Error().stack?.split('\n').slice(1, 4).join('\n'));
                 state.tactical.activeWindow = null;
+                state.tactical.frozenTick = null;
                 state.tactical.countdownEnd = null;
                 state.tactical.reactionTriggered = false;
             }),
 
-            setCountdownEnd: (ms) => set((state) => { state.tactical.countdownEnd = ms; }),
+            setCountdownEnd: (ms) => set((state) => {
+                console.log('[STORE] setCountdownEnd ms=', ms, ', reactionTriggered=', state.tactical.reactionTriggered);
+                state.tactical.countdownEnd = ms;
+            }),
 
-            triggerReaction: () => set((state) => { state.tactical.reactionTriggered = true; }),
+            triggerReaction: () => set((state) => {
+                console.log('[STORE] triggerReaction');
+                state.tactical.reactionTriggered = true;
+            }),
 
             resetReaction: () => set((state) => { state.tactical.reactionTriggered = false; }),
 
             sendDecisionResponse: (chosenOptionId) => {
-                const window = useGameStore.getState().tactical.activeWindow;
-                if (!window) return;
+                const currentState = useGameStore.getState();
+                const window = currentState.tactical.activeWindow;
+                const triggered = currentState.tactical.reactionTriggered;
+                const cEnd = currentState.tactical.countdownEnd;
+                const now = Date.now();
+                const rem = cEnd ? cEnd - now : 'N/A';
+                console.trace(
+                    `[DEBUG sendDecisionResponse] chosenOptionId=${chosenOptionId}, ` +
+                    `reactionTriggered=${triggered}, countdownRemaining=${rem}, ` +
+                    `hasWindow=${!!window}`
+                );
+                if (!window) {
+                    console.log('[DEBUG sendDecisionResponse] No active window, returning');
+                    return;
+                }
                 import('../network/socketClient').then(({ socketClient }) => {
                     socketClient.sendDecisionResponse({ windowId: window.windowId, chosenOptionId });
                 });
-                useGameStore.getState().clearActiveWindow();
+                // 仅当用户已接战（手动跳过/选择）时清除本地窗口。
+                // 自动跳过（倒计时到期但未按空格）不清除 → 等待后端 DECISION_ALL_RESOLVED，
+                // 保证 HUD 状态栏和GM强制跳过按钮在其他标签页上持续可见。
+                if (triggered) {
+                    useGameStore.getState().clearActiveWindow();
+                }
             },
 
             setPlayerToggle: (mode) => set((state) => {
@@ -248,9 +286,10 @@ export const useGameStore = create<GameState>()(
                 state.tactical.hookPresets.push(preset);
                 const actorId = preset.entityId || useGameStore.getState().selectedEntityId;
                 if (actorId) {
+                    const preset_ = preset;
                     import('../network/IntentDispatcher').then(({ IntentDispatcher }) => {
-                        IntentDispatcher.dispatchHookPreset(actorId, preset);
-                    });
+                        IntentDispatcher.dispatchHookPreset(actorId, preset_);
+                    }).catch(e => console.warn('[Store] Failed to dispatch hook preset:', e));
                 }
             }),
 
@@ -258,10 +297,37 @@ export const useGameStore = create<GameState>()(
                 const preset = state.tactical.hookPresets.find(p => p.id === id);
                 state.tactical.hookPresets = state.tactical.hookPresets.filter(p => p.id !== id);
                 if (preset?.entityId) {
+                    const entityId = preset.entityId;
                     const disabled = { ...preset, enabled: false };
                     import('../network/IntentDispatcher').then(({ IntentDispatcher }) => {
-                        IntentDispatcher.dispatchHookPreset(preset.entityId!, disabled);
-                    });
+                        IntentDispatcher.dispatchHookPreset(entityId, disabled);
+                    }).catch(e => console.warn('[Store] Failed to dispatch hook disable:', e));
+                }
+            }),
+
+            upsertHookPreset: (hookData) => set((state) => {
+                const idx = state.tactical.hookPresets.findIndex(p => p.id === hookData.id);
+                if (idx >= 0) {
+                    state.tactical.hookPresets[idx] = hookData;
+                } else {
+                    state.tactical.hookPresets.push(hookData);
+                }
+            }),
+
+            removeHookPresetLocal: (id) => set((state) => {
+                state.tactical.hookPresets = state.tactical.hookPresets.filter(p => p.id !== id);
+            }),
+
+            setSyncHookPresets: (presets) => set((state) => {
+                // Merge synced hooks: keep local-only, overwrite synced, add new
+                const localIds = new Set(state.tactical.hookPresets.map(p => p.id));
+                for (const p of presets) {
+                    const idx = state.tactical.hookPresets.findIndex(x => x.id === p.id);
+                    if (idx >= 0) {
+                        state.tactical.hookPresets[idx] = p;
+                    } else {
+                        state.tactical.hookPresets.push(p);
+                    }
                 }
             }),
         }))

@@ -36,9 +36,24 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
     private combatEnded = false;
     
     private pendingMutations: StateMutationPayload = { tick: 0, mutations: [] };
+    /** 等待决策的窗口数量，> 0 时暂停 processQueue */
+    private pendingDecisionCount = 0;
+    /** generateSystemHooks 是否在本 tick 发出了 DECISION_POLL（需要等决策） */
+    private systemDecisionPending = false;
 
     private hookRegistry: HookRegistry;
+    private scheduledActions: ActionScheduledPayload[] = [];
     private decisionTargets: Map<string, { reactorId: EntityId; sourceId: EntityId }> = new Map();
+    /** 当前活跃决策（供 SCENE_SYNC / 全前端状态栏同步） */
+    private activeDecisionPolls: Map<string, DecisionPollPayload> = new Map();
+    /** 已按空格进入主动决策的窗口 → 对应的 socketId（防止多客户端自动跳过低消接战状态） */
+    private engagedWindows: Map<string, string> = new Map();
+    /** 已收到响应的窗口（防重复 + 竞争条件导致计数器负值） */
+    private respondedWindows: Set<string> = new Set();
+
+    /** 玩家控制的实体 ID 集合（仅这些实体的 DECISION_POLL 会阻塞队列） */
+    private playerControlledEntities: Set<EntityId> = new Set();
+    private _playerControlInitialized = false;
 
     private playerToggles: Map<EntityId, PlayerPriorityToggle> = new Map();
 
@@ -67,6 +82,53 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
 
     public getAllEntities(): Entity[] {
         return Array.from(this.entities.values());
+    }
+
+    /** 获取已安排动作列表（供前端 SCENE_SYNC 同步） */
+    public getScheduledActions(): ActionScheduledPayload[] {
+        return this.scheduledActions;
+    }
+
+    /** 获取当前活跃决策窗口（供 SCENE_SYNC 同步） */
+    public getActiveDecisionPoll(): DecisionPollPayload | null {
+        const first = this.activeDecisionPolls.values().next();
+        return first.done ? null : first.value;
+    }
+
+    /** 获取所有活跃决策窗口（供 SCENE_SYNC 同步） */
+    public getActiveDecisionPolls(): DecisionPollPayload[] {
+        return Array.from(this.activeDecisionPolls.values());
+    }
+
+    /** 获取待决决策窗口数量（供 SCENE_SYNC 同步） */
+    public getPendingDecisionCount(): number {
+        return this.pendingDecisionCount;
+    }
+
+    public setPlayerControlledEntities(ids: EntityId[]): void {
+        this.playerControlledEntities = new Set(ids);
+        this._playerControlInitialized = true;
+    }
+
+    public addPlayerControlledEntity(id: EntityId): void {
+        this.playerControlledEntities.add(id);
+        this._playerControlInitialized = true;
+    }
+
+    public removePlayerControlledEntity(id: EntityId): void {
+        this.playerControlledEntities.delete(id);
+    }
+
+    public getActiveHookPresets(): { id: string; entityId: string; label: string; trigger: HookTrigger; enabled: boolean }[] {
+        return this.hookRegistry.getAll()
+            .filter(h => h.enabled && !h.fired)
+            .map(h => ({
+                id: h.id,
+                entityId: h.entityId,
+                label: h.label,
+                trigger: h.trigger,
+                enabled: h.enabled
+            }));
     }
 
     public getRulePackDefs(): RulePackDefs | null {
@@ -215,7 +277,7 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             moveActiveTicks.push(moveTick + i * MOVE_INTERVAL_TICKS);
         }
         const moveEndTick = evt.targetTick + (waypoints.length - 1) * MOVE_INTERVAL_TICKS + 1 + MOVE_RECOVERY_TICKS;
-        this.emit('ACTION_SCHEDULED', {
+        const movePayload: ActionScheduledPayload = {
             entityId: actor.id,
             actionId: '__BUILTIN_MOVE__',
             actionName: 'Move',
@@ -227,7 +289,9 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
                 pulseTicks: moveActiveTicks
             },
             tags: ['MOVEMENT']
-        } as ActionScheduledPayload);
+        };
+        this.scheduledActions.push(movePayload);
+        this.emit('ACTION_SCHEDULED', movePayload);
 
         if (!this._batchMode) this.processQueue();
     }
@@ -287,7 +351,7 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         };
 
         // 广播 ACTION_SCHEDULED
-        this.emit('ACTION_SCHEDULED', {
+        const castPayload: ActionScheduledPayload = {
             entityId: intent.actorId,
             actionId: template.id,
             actionName: template.id,
@@ -299,7 +363,9 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
                 pulseTicks
             },
             tags: template.tags
-        } as ActionScheduledPayload);
+        };
+        this.scheduledActions.push(castPayload);
+        this.emit('ACTION_SCHEDULED', castPayload);
 
         if (!this._batchMode) this.processQueue();
     }
@@ -381,7 +447,7 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
 
         this.logger.game(`🛡️ [Parry] Tick ${this.currentTick}: ${actor.id} 进入招架姿态 (startup=${startupTicks})`, null, LogVisibility.PLAYER, this.logCtx());
 
-        this.emit('ACTION_SCHEDULED', {
+        const parryPayload: ActionScheduledPayload = {
             entityId: actor.id,
             actionId: 'PARRY',
             actionName: '招架',
@@ -393,7 +459,9 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
                 pulseTicks: []
             },
             tags: ['DEFENSE']
-        } as ActionScheduledPayload);
+        };
+        this.scheduledActions.push(parryPayload);
+        this.emit('ACTION_SCHEDULED', parryPayload);
 
         if (!this._batchMode) this.processQueue();
     }
@@ -492,6 +560,18 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         // Register via HookRegistry
         this.hookRegistry.register(actor.id, preset, 'MANUAL', this.currentTick, 0);
 
+        // 广播 hook 同步给场景内所有客户端
+        this.emit('HOOK_SYNC', {
+            action: preset.enabled ? 'register' : 'remove',
+            hook: {
+                id: preset.id,
+                entityId: preset.entityId,
+                label: preset.label,
+                trigger: preset.trigger,
+                enabled: preset.enabled
+            }
+        });
+
         this.logger.game(
             `🪝 [Hook] ${actor.id} ${preset.enabled ? '启用' : '禁用'} Hook '${preset.label}' (${preset.id})`,
             { actorId: actor.id, hookId: preset.id, enabled: preset.enabled },
@@ -516,22 +596,32 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
      */
     private evaluateHooks(tick: Tick): boolean {
         const firedHooks = this.hookRegistry.evaluate(tick, this.entities);
-        let manualFired = false;
+
+        // 按 entity 分组触发的 manual hook，同一角色同 tick 合并为一个决策窗口
+        const manualByEntity = new Map<string, UnifiedHook[]>();
 
         for (const hook of firedHooks) {
-            // 跳过系统钩子的 DECISION_POLL（仅手动钩子需要决策触发）
+            // 发送 hook 触发通知给前端以便自动清理
+            this.emit('HOOK_FIRED', { id: hook.id, source: hook.source, label: hook.label });
+
             if (hook.source === 'SYSTEM') continue;
+            const group = manualByEntity.get(hook.entityId) ?? [];
+            group.push(hook);
+            manualByEntity.set(hook.entityId, group);
+        }
 
-            manualFired = true;
+        if (manualByEntity.size === 0) return false;
 
+        for (const [entityId, hooks] of manualByEntity) {
             const windowId = generateId();
+            const labels = hooks.map(h => h.label).join(' · ');
             const payload: DecisionPollPayload = {
                 windowId,
                 windowType: 'REACTION',
-                actorId: hook.entityId,
+                actorId: entityId,
                 sourceAction: {
                     actorId: 'SYSTEM',
-                    actionName: hook.label,
+                    actionName: labels,
                     startupRemainingTicks: 0
                 },
                 countdownMs: 5000,
@@ -540,16 +630,19 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             };
 
             this.logger.game(
-                `🪝 [Hook] Tick ${tick}: '${hook.label}' 触发，强制决策窗口`,
-                { hookId: hook.id, entityId: hook.entityId, tick },
+                `🪝 [Hook] Tick ${tick}: ${entityId} 触发 ${hooks.length} 个钩子: ${labels}`,
+                { hookIds: hooks.map(h => h.id), entityId, tick },
                 LogVisibility.PLAYER,
                 this.logCtx()
             );
 
+            this.activeDecisionPolls.set(windowId, payload);
             this.emit('DECISION_POLL', payload);
+            this.pendingDecisionCount++;
+            this.systemDecisionPending = true;
         }
 
-        return manualFired;
+        return true;
     }
 
     // ============================================================
@@ -657,7 +750,9 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         const template = Dictionary.getAction(sourceAction.actionTemplateId);
         if (!template) return;
 
-        const validReactors = this.getValidReactors(sourceAction);
+        // 仅当初始化了 playerControlledEntities 后才过滤 NPC 反应者
+        const validReactors = this.getValidReactors(sourceAction)
+            .filter(r => !this._playerControlInitialized || this.playerControlledEntities.has(r.id));
         if (validReactors.length === 0) return;
 
         const countdownMs = 3000;
@@ -691,7 +786,10 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
                 tick: this.currentTick
             };
 
+            this.activeDecisionPolls.set(windowId, payload);
             this.emit('DECISION_POLL', payload);
+            this.pendingDecisionCount++;
+            this.systemDecisionPending = true;
         }
 
         this.logger.game(
@@ -701,15 +799,72 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
     }
 
     /**
+     * 玩家按下空格进入主动决策，标记窗口以防止倒计时过期自动跳过。
+     */
+    public handleDecisionEngage(windowId: string, socketId: string): void {
+        this.engagedWindows.set(windowId, socketId);
+        this.logger.info(`[DecisionEngage] 窗口 ${windowId} 已由 socket=${socketId} 进入主动决策`, null, this.logCtx());
+    }
+
+    /** GM 强制中断所有决策窗口，恢复队列推进 */
+    public handleGmForceResolve(): void {
+        if (this.pendingDecisionCount <= 0) return;
+        this.logger.game(
+            `⏭️ [GM] 强制中断决策（${this.pendingDecisionCount} 个待决窗口），恢复队列推进`,
+            null, LogVisibility.PLAYER, this.logCtx()
+        );
+        this.pendingDecisionCount = 0;
+        this.engagedWindows.clear();
+        this.activeDecisionPolls.clear();
+
+        this.emit('DECISION_ALL_RESOLVED', { windowCount: this.decisionTargets.size });
+        this.decisionTargets.clear();
+        if (!this.tickLoop.isEmpty()) {
+            this.processQueue();
+        }
+    }
+
+    /**
      * 处理客户端对决策窗口的响应。
      * 查找对应实体，执行选中的反应动作。
+     * 使用 pendingDecisionCount 追踪所有待决窗口，仅当全部决策完毕时才恢复队列。
      */
-    public handleDecisionResponse(payload: DecisionResponsePayload): void {
-        // 如果选择忽略或超时不做反应，恢复队列继续推进
-        if (!payload.chosenOptionId || payload.chosenOptionId === 'DO_NOTHING') {
-            if (!this.tickLoop.isEmpty()) {
-                this.processQueue();
+    public handleDecisionResponse(payload: DecisionResponsePayload, socketId: string): void {
+        // 防重复：同一窗口忽略二次响应
+        if (this.respondedWindows.has(payload.windowId)) {
+            this.logger.warn(`DecisionResponse: 窗口 ${payload.windowId} 已响应，忽略重复`, null, this.logCtx());
+            return;
+        }
+        this.respondedWindows.add(payload.windowId);
+
+        const engagedSocketId = this.engagedWindows.get(payload.windowId);
+
+        // 如果窗口已有人主动决策（按过空格），忽略纯倒计时过期（null），
+        // 除非该 null 响应来自接战的同一个 socket（即用户本人按了空格但倒计时到期）
+        if (engagedSocketId && payload.chosenOptionId === null) {
+            if (socketId === engagedSocketId) {
+                // 接战者本人的倒计时到期 → 主动跳过
+                this.pendingDecisionCount = Math.max(0, this.pendingDecisionCount - 1);
+                this.engagedWindows.delete(payload.windowId);
+                this.decisionTargets.delete(payload.windowId);
+                this.tryResumeAfterDecision();
+            } else {
+                // 其他客户端的自动跳过 → 忽略，等待接战者本人的决定
+                this.logger.info(
+                    `DecisionResponse: 窗口 ${payload.windowId} 已被 socket=${engagedSocketId} 接战，忽略 socket=${socketId} 的自动跳过`,
+                    null, this.logCtx()
+                );
             }
+            return;
+        }
+        this.engagedWindows.delete(payload.windowId);
+
+        this.pendingDecisionCount = Math.max(0, this.pendingDecisionCount - 1);
+
+        // 如果选择忽略或明确放弃，仅清理映射，不创建动作
+        if (!payload.chosenOptionId || payload.chosenOptionId === 'DO_NOTHING') {
+            this.decisionTargets.delete(payload.windowId);
+            this.tryResumeAfterDecision();
             return;
         }
 
@@ -717,6 +872,7 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         const target = this.decisionTargets.get(payload.windowId);
         if (!target) {
             this.logger.warn(`DecisionResponse: 未找到窗口 ${payload.windowId} 对应的实体`, null, this.logCtx());
+            this.tryResumeAfterDecision();
             return;
         }
 
@@ -724,6 +880,7 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         if (!reactor) {
             this.logger.warn(`DecisionResponse: 实体 ${target.reactorId} 不存在`, null, this.logCtx());
             this.decisionTargets.delete(payload.windowId);
+            this.tryResumeAfterDecision();
             return;
         }
 
@@ -734,6 +891,7 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         const reactionTemplate = Dictionary.getAction(payload.chosenOptionId);
         if (!reactionTemplate) {
             this.logger.warn(`DecisionResponse: 动作模板 ${payload.chosenOptionId} 不存在`, null, this.logCtx());
+            this.tryResumeAfterDecision();
             return;
         }
 
@@ -770,8 +928,28 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             this.logCtx()
         );
 
-        this.processQueue();
+        this.tryResumeAfterDecision();
     }
+
+    /**
+     * 当 pendingDecisionCount 归零时，唤醒引擎继续推进队列。
+     * 所有决策者的反应动作已在 handleDecisionResponse 中排队。
+     */
+    private tryResumeAfterDecision(): void {
+        if (this.pendingDecisionCount > 0) {
+            this.logger.info(
+                `[Decision] 等待 ${this.pendingDecisionCount} 个决策窗口完成`,
+                null, this.logCtx()
+            );
+            return;
+        }
+        this.activeDecisionPolls.clear();
+        this.emit('DECISION_ALL_RESOLVED', { remainingTargets: this.decisionTargets.size });
+        if (!this.tickLoop.isEmpty()) {
+            this.processQueue();
+        }
+    }
+
 
     // ============================================================
     //  微闪避
@@ -931,6 +1109,8 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
     }
 
     private processQueue(): void {
+        if (this.pendingDecisionCount > 0) return;
+
         while (!this.tickLoop.isEmpty()) {
             // 广播上一轮的 accumulation
             if (this.pendingMutations.mutations.length > 0) {
@@ -966,8 +1146,11 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             const hookFired = this.evaluateHooks(step.tick);
             this.hookRegistry.cleanup(step.tick);
 
-            // 手动钩子触发后：先广播当前 tick 的 mutations，再暂停队列让 DECISION_POLL 送达前端
-            if (hookFired) {
+            // 手动钩子（evaluateHooks）或系统钩子（generateSystemHooks）触发 DECISION_POLL 后暂停队列
+            const shouldPause = hookFired || this.systemDecisionPending;
+            this.systemDecisionPending = false;
+
+            if (shouldPause) {
                 if (this.pendingMutations.mutations.length > 0) {
                     this.broadcastMutations();
                 }
@@ -978,6 +1161,8 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         }
 
         this.broadcastMutations();
+        // 强制同步 tick：当后续 tick 无 mutation 时前端仍能获得最新 tick
+        this.emit('STATE_MUTATED', { tick: this.currentTick, mutations: [] });
 
         // 所有事件处理完毕，检查战斗是否应该结束
         this.checkAndEndCombat();

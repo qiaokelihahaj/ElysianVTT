@@ -116,6 +116,9 @@ function App() {
         })();
 
         const handleMutation = (payload: any) => {
+            if (payload.mutations?.length === 0) {
+                console.log('[App] STATE_MUTATED (tick sync):', payload);
+            }
             useGameStore.getState().applyStateMutation(payload);
         };
 
@@ -125,9 +128,19 @@ function App() {
             });
         };
 
-        const handleSceneSync = (payload: { tick: number, entities: any[], scheduledActions?: any[] }) => {
+        const handleSceneSync = (payload: { tick: number, entities: any[], scheduledActions?: any[], hookPresets?: any[], activeDecisionPoll?: any, activeDecisionPolls?: any[], pendingDecisionCount?: number }) => {
             console.log('[App] Received Scene Sync:', payload);
             useGameStore.getState().setInitialScene(payload.entities, payload.tick, payload.scheduledActions);
+            if (payload.hookPresets) {
+                useGameStore.getState().setSyncHookPresets(payload.hookPresets);
+            }
+            // 重连后恢复决策窗口 UI（强制中断按钮 + 状态栏）
+            const polls = payload.activeDecisionPolls ?? (payload.activeDecisionPoll ? [payload.activeDecisionPoll] : []);
+            for (const poll of polls) {
+                const store = useGameStore.getState();
+                store.setActiveWindow(poll);
+                store.setCountdownEnd(Date.now() + (poll.countdownMs ?? 5000));
+            }
         };
 
         const handleActionScheduled = (payload: any) => {
@@ -138,9 +151,7 @@ function App() {
         const handleDecisionPoll = (payload: any) => {
             console.log('[App] Decision Poll:', payload);
             const store = useGameStore.getState();
-            if (payload.tick !== undefined) {
-                useGameStore.setState({ tick: payload.tick });
-            }
+            // 不覆盖 tick：STATE_MUTATED 已有最新值，DECISION_POLL 的 tick 可能滞后
             store.setActiveWindow(payload);
             store.setCountdownEnd(Date.now() + payload.countdownMs);
         };
@@ -161,12 +172,43 @@ function App() {
             }
         };
 
+        const handleHookFired = (payload: { hookId: string, source: string }) => {
+            console.log('[App] Hook Fired:', payload);
+            // 自动清理前端已触发的 hook 预设
+            if (payload.source === 'MANUAL') {
+                useGameStore.getState().removeHookPresetLocal(payload.hookId);
+            }
+        };
+
+        const handleHookSync = (payload: { action: string, hook: { id: string, entityId: string, label: string, trigger: any, enabled: boolean } }) => {
+            if (payload.action === 'remove') {
+                useGameStore.getState().removeHookPresetLocal(payload.hook.id);
+            } else {
+                useGameStore.getState().upsertHookPreset(payload.hook);
+            }
+        };
+
+        const handleDecisionAllResolved = (payload: any) => {
+            const store = useGameStore.getState();
+            // 防御：多标签页场景下，用户已接战时（按过空格），
+            // 不应因其他标签页的自动跳过而清除决策窗口
+            if (store.tactical.reactionTriggered) {
+                console.log('[App] DECISION_ALL_RESOLVED ignored: user is engaged, payload:', payload);
+                return;
+            }
+            console.log('[App] DECISION_ALL_RESOLVED: clearing window, payload:', payload);
+            store.clearActiveWindow();
+        };
+
         socketClient.onStateMutated(handleMutation);
         socketClient.onVisualFx(handleVisualFx);
         socketClient.onSceneSync(handleSceneSync);
         socketClient.onActionScheduled(handleActionScheduled);
         socketClient.onDecisionPoll(handleDecisionPoll);
         socketClient.onJoinSuccess(handleJoinSuccess);
+        socketClient.onHookSync(handleHookSync);
+        socketClient.onHookFired(handleHookFired);
+        socketClient.onDecisionAllResolved(handleDecisionAllResolved);
 
         return () => {
             socketClient.offStateMutated(handleMutation);
@@ -175,6 +217,9 @@ function App() {
             socketClient.offActionScheduled(handleActionScheduled);
             socketClient.offDecisionPoll(handleDecisionPoll);
             socketClient.offJoinSuccess(handleJoinSuccess);
+            socketClient.offHookFired(handleHookFired);
+            socketClient.offHookSync(handleHookSync);
+            socketClient.offDecisionAllResolved(handleDecisionAllResolved);
             socketClient.disconnect();
         };
     }, []);

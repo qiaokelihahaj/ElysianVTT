@@ -47,6 +47,31 @@ export class SocketServer {
         this.setupListeners();
     }
 
+    /**
+     * 汇总当前场景所有 socket 的权限，更新 CombatEngine 的 playerControlledEntities。
+     * GM 控制所有实体，PL 控制各自的 actorId。
+     */
+    private async refreshPlayerControlledEntities(sceneId: string): Promise<void> {
+        try {
+            const engine = await this.campaignManager.getOrCreateEngine(sceneId);
+            const sockets = await this.io.in(sceneId).fetchSockets();
+            const allControlled = new Set<string>();
+
+            for (const s of sockets) {
+                const data = s.data as SocketSessionState;
+                if (data.role === 'GM') {
+                    engine.getAllEntities().forEach(e => allControlled.add(e.id));
+                } else if (data.role === 'PL' && data.currentActorId) {
+                    allControlled.add(data.currentActorId);
+                }
+            }
+
+            engine.setPlayerControlledEntities(Array.from(allControlled));
+        } catch (error) {
+            logger.warn(`refreshPlayerControlledEntities failed for scene ${sceneId}`, error);
+        }
+    }
+
     private setupListeners() {
         this.io.on('connection', (socket: Socket) => {
             logger.info(`Client connected: ${socket.id}`);
@@ -179,6 +204,9 @@ export class SocketServer {
 
                     scene?.onPlayerJoin(actorId);
 
+                    // 更新引擎的玩家控制实体列表
+                    this.refreshPlayerControlledEntities(sceneId);
+
                     socket.emit('JOIN_SUCCESS', {
                         sceneId,
                         serverTime: Date.now(),
@@ -188,7 +216,11 @@ export class SocketServer {
 
                     socket.emit('SCENE_SYNC', {
                         tick: engine.currentTick,
-                        entities: engine.getAllEntities()
+                        entities: engine.getAllEntities(),
+                        scheduledActions: engine.getScheduledActions?.() ?? [],
+                        hookPresets: engine.getActiveHookPresets?.() ?? [],
+                        activeDecisionPolls: engine.getActiveDecisionPolls?.() ?? [],
+                        pendingDecisionCount: engine.getPendingDecisionCount?.() ?? 0
                     });
 
                 } catch (error) {
@@ -266,7 +298,11 @@ export class SocketServer {
                 const engine = await this.campaignManager.getOrCreateEngine(sState.currentSceneId);
                 socket.emit('SCENE_SYNC', {
                     tick: engine.currentTick,
-                    entities: engine.getAllEntities()
+                    entities: engine.getAllEntities(),
+                    scheduledActions: engine.getScheduledActions?.() ?? [],
+                    hookPresets: engine.getActiveHookPresets?.() ?? [],
+                    activeDecisionPolls: engine.getActiveDecisionPolls?.() ?? [],
+                    pendingDecisionCount: engine.getPendingDecisionCount?.() ?? 0
                 });
             });
 
@@ -275,7 +311,25 @@ export class SocketServer {
                 if (!sState.currentSceneId) return;
                 const engine = await this.campaignManager.getOrCreateEngine(sState.currentSceneId);
                 if (typeof (engine as any).handleDecisionResponse === 'function') {
-                    (engine as any).handleDecisionResponse(payload);
+                    (engine as any).handleDecisionResponse(payload, socket.id);
+                }
+            });
+
+            socket.on('DECISION_ENGAGE', async (payload: { windowId: string }) => {
+                const sState = socket.data as SocketSessionState;
+                if (!sState.currentSceneId) return;
+                const engine = await this.campaignManager.getOrCreateEngine(sState.currentSceneId);
+                if (typeof (engine as any).handleDecisionEngage === 'function') {
+                    (engine as any).handleDecisionEngage(payload.windowId, socket.id);
+                }
+            });
+
+            socket.on('GM_FORCE_RESOLVE', async () => {
+                const sState = socket.data as SocketSessionState;
+                if (!sState.currentSceneId || sState.role !== 'GM') return;
+                const engine = await this.campaignManager.getOrCreateEngine(sState.currentSceneId);
+                if (typeof (engine as any).handleGmForceResolve === 'function') {
+                    (engine as any).handleGmForceResolve();
                 }
             });
 
@@ -288,6 +342,8 @@ export class SocketServer {
                     socket.leave(sceneId);
                     const scene = this.campaignManager.getScene(sceneId);
                     scene?.onPlayerLeave(actorId);
+
+                    this.refreshPlayerControlledEntities(sceneId);
 
                     logger.info(`Player ${actorId} left scene ${sceneId}`, { sceneId });
                 }
@@ -305,6 +361,8 @@ export class SocketServer {
                 if (sceneId) {
                     const scene = this.campaignManager.getScene(sceneId);
                     scene?.onPlayerLeave(actorId);
+
+                    this.refreshPlayerControlledEntities(sceneId);
 
                     logger.info(`Client disconnected: ${socket.id} from scene ${sceneId}`, { sceneId, socketId: socket.id });
                 } else {
