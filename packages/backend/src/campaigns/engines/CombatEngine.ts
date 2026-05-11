@@ -15,6 +15,7 @@ import { Dictionary } from '../../db/Dictionary.js';
 import { RulePackLoader } from '../../db/RulePackLoader.js';
 import { EffectSystem } from '../../core/systems/EffectSystem.js';
 import { SpatialSystem } from '../../core/systems/SpatialSystem.js';
+import { FormationService } from '../../core/systems/FormationService.js';
 import { ProjectileSystem } from '../../core/systems/ProjectileSystem.js';
 import { RuleEvaluator } from '../../core/systems/RuleEvaluator.js';
 import { VectorMath } from '../../utils/VectorMath.js';
@@ -264,11 +265,28 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
     private handleMoveIntent(actor: Entity, targetCoords: { x: number; y: number; z: number }): void {
         this.cancelCurrentAction(actor);
 
-        const waypoints = SpatialSystem.planWaypoints(actor, targetCoords, MOVE_STEP_SIZE);
-        
+        let waypoints = SpatialSystem.planWaypoints(actor, targetCoords, MOVE_STEP_SIZE);
+
         if (waypoints.length === 0) {
             this.logger.warn(`${actor.id} 已在目标位置`, null, this.logCtx());
             return;
+        }
+
+        // Phase 3.5: 阵型物理拦截 — 检查移动路径是否有 bodyBlocking 实体
+        const moveBlocked = FormationService.checkMoveBlocked(
+            actor, targetCoords, this.entities, this.logCtx()
+        );
+        if (moveBlocked.blocked && moveBlocked.blocker) {
+            // 截断航点到阻挡点
+            const blockPoint = moveBlocked.adjustedTarget;
+            waypoints = SpatialSystem.planWaypoints(actor, blockPoint, MOVE_STEP_SIZE);
+            if (waypoints.length === 0) {
+                this.logger.game(
+                    `🧱 [Formation] ${actor.id} 被 ${moveBlocked.blocker.id} 完全阻挡，移动取消`,
+                    null, LogVisibility.PLAYER, this.logCtx()
+                );
+                return;
+            }
         }
 
         this.logger.game(

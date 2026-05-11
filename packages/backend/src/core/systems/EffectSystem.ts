@@ -3,6 +3,7 @@ import { Entity, ActionTemplate, ActionEffectPayload, DiceRule, LogVisibility, H
 import { RuleEvaluator } from './RuleEvaluator.js';
 import { BodyPartResolver } from './BodyPartResolver.js';
 import { AoeResolver } from './AoeResolver.js';
+import { FormationService } from './FormationService.js';
 import { VectorMath } from '../../utils/VectorMath.js';
 import { Logger } from '../../utils/Logger.js';
 
@@ -52,7 +53,7 @@ export class EffectSystem {
         actor: Entity,
         target: Entity,
         template: ActionTemplate,
-        engineCtx: { tick?: number; sceneId?: string } | undefined,
+        engineCtx: { tick?: number; sceneId?: string; entities?: Map<string, Entity> } | undefined,
         recordChange: (id: string, path: string, value: any) => void,
         onInterrupt?: (target: Entity) => void,
         coverDrMap?: Map<string, number>
@@ -85,6 +86,25 @@ export class EffectSystem {
             case 'DAMAGE': {
                 let effectiveAmount = amount;
                 const poolTags: string[] = rolls?.poolTags ?? [];
+
+                // ── Phase 3.5: 阵型主动拦截 ──
+                if (engineCtx?.entities && engineCtx.entities.size > 0) {
+                    const interception = FormationService.checkAttackIntercepted(
+                        actor, [target], engineCtx.entities, amount, effectiveAmount, engineCtx
+                    );
+                    if (interception.intercepted && interception.result) {
+                        effectiveAmount = interception.adjustedDamage;
+                        if (!interception.result.success) {
+                            // 拦截失败：护卫被击退 + 韧性损失
+                            const guardian = engineCtx.entities.get(interception.result.interceptorId);
+                            if (guardian) {
+                                const penalty = FormationService.applyFailurePenalty(guardian);
+                                recordChange(guardian.id, 'transform.coords', guardian.transform.coords);
+                                recordChange(guardian.id, 'resources.current.poise', guardian.resources.current['poise']);
+                            }
+                        }
+                    }
+                }
 
                 // ── 要害优先路线：部位判定 + 暴击 + 截断 ──
                 const route: string | undefined = effect.parameters.route;

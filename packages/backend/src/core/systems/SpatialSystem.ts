@@ -455,4 +455,175 @@ export class SpatialSystem {
         if (dist > deadZone) return 'DEAD_ZONE';
         return 'SWEET_SPOT';
     }
+
+    // ============================================
+    // 阵型与拦截 (Formation — Phase 3.5)
+    // ============================================
+
+    /**
+     * 检查从 from 到 to 的直线路径是否被实体阻挡
+     */
+    public static checkPathBlocked(
+        from: Vector3D,
+        to: Vector3D,
+        blockers: Entity[],
+        stepSize: number = 0.5
+    ): { blocked: boolean; blocker: Entity | null; blockPoint: Vector3D | null } {
+        let cursor = { x: from.x, y: from.y, z: from.z ?? 0 };
+        const end = { x: to.x, y: to.y, z: to.z ?? 0 };
+
+        while (VectorMath.distance(cursor, end) > 0.1) {
+            cursor = VectorMath.stepTowards(cursor, end, stepSize);
+
+            for (const blocker of blockers) {
+                const dist = VectorMath.distance(cursor, blocker.transform.coords);
+                const collisionDist = (blocker.physics.collisionRadius ?? 0.5) + 0.3;
+                if (dist <= collisionDist) {
+                    return { blocked: true, blocker, blockPoint: { ...cursor } };
+                }
+            }
+        }
+
+        return { blocked: false, blocker: null, blockPoint: null };
+    }
+
+    /**
+     * 尝试绕过阻挡实体（侧移路径）
+     */
+    public static findBypassPath(
+        from: Vector3D,
+        to: Vector3D,
+        blocker: Entity,
+        stepSize: number = 0.5
+    ): Vector3D[] | null {
+        const dir = { x: to.x - from.x, y: to.y - from.y, z: 0 };
+        const dist = Math.sqrt(dir.x * dir.x + dir.y * dir.y);
+        if (dist < 0.01) return null;
+
+        const perpX = -dir.y;
+        const perpY = dir.x;
+        const perpMag = Math.sqrt(perpX * perpX + perpY * perpY);
+        if (perpMag < 0.001) return null;
+
+        const normPerpX = perpX / perpMag;
+        const normPerpY = perpY / perpMag;
+
+        const bypassDist = (blocker.physics.collisionRadius ?? 0.5) + 1.5;
+        const midPoint = {
+            x: blocker.transform.coords.x + normPerpX * bypassDist,
+            y: blocker.transform.coords.y + normPerpY * bypassDist,
+            z: from.z ?? 0
+        };
+
+        const path: Vector3D[] = [];
+        let c1 = { x: from.x, y: from.y, z: from.z ?? 0 };
+        while (VectorMath.distance(c1, midPoint) > 0.1) {
+            c1 = VectorMath.stepTowards(c1, midPoint, stepSize);
+            path.push({ ...c1 });
+        }
+
+        let c2 = { x: midPoint.x, y: midPoint.y, z: midPoint.z };
+        while (VectorMath.distance(c2, to) > 0.1) {
+            c2 = VectorMath.stepTowards(c2, to, stepSize);
+            path.push({ ...c2 });
+        }
+
+        return path;
+    }
+
+    /**
+     * 获取指定位置附近的拦截者（PROTECTOR 角色）
+     */
+    public static getNearestInterceptors(
+        attackerPos: Vector3D,
+        protecteePos: Vector3D,
+        entities: Entity[]
+    ): Entity[] {
+        return entities.filter(e => {
+            if (!e.formationContext?.interceptConfig) return false;
+            const config = e.formationContext.interceptConfig;
+            const distToAttacker = VectorMath.distance(e.transform.coords, attackerPos);
+            const distToProtectee = VectorMath.distance(e.transform.coords, protecteePos);
+            return distToAttacker <= config.interceptRange ||
+                   distToProtectee <= config.interceptRange;
+        });
+    }
+
+    /**
+     * 检查路径是否被封锁区域阻挡
+     */
+    public static checkZoneBlock(
+        from: Vector3D,
+        to: Vector3D,
+        zones: Array<{ center: Vector3D; radius: number }>,
+        stepSize: number = 0.5
+    ): { blocked: boolean; blockingZone: { center: Vector3D; radius: number } | null; entryPoint: Vector3D | null } {
+        let cursor = { x: from.x, y: from.y, z: from.z ?? 0 };
+        const end = { x: to.x, y: to.y, z: to.z ?? 0 };
+
+        while (VectorMath.distance(cursor, end) > 0.1) {
+            cursor = VectorMath.stepTowards(cursor, end, stepSize);
+
+            for (const zone of zones) {
+                const dist = VectorMath.distance(zone.center, cursor);
+                if (dist <= zone.radius) {
+                    return { blocked: true, blockingZone: zone, entryPoint: { ...cursor } };
+                }
+            }
+        }
+
+        return { blocked: false, blockingZone: null, entryPoint: null };
+    }
+
+    /**
+     * 检查实体是否进入封锁区域
+     */
+    public static checkZoneEntry(
+        zone: { center: Vector3D; radius: number },
+        currentPos: Vector3D,
+        previousPos: Vector3D
+    ): boolean {
+        const nowIn = VectorMath.distance(zone.center, currentPos) <= zone.radius;
+        const wasIn = VectorMath.distance(zone.center, previousPos) <= zone.radius;
+        return nowIn && !wasIn;
+    }
+
+    /**
+     * 从多个拦截者中选择最优拦截者
+     * 优先级：距离攻击者最近 → 拦截值最高
+     */
+    public static selectInterceptor(
+        interceptors: Entity[],
+        attackerPos: Vector3D
+    ): Entity | null {
+        if (interceptors.length === 0) return null;
+        if (interceptors.length === 1) return interceptors[0];
+
+        const sorted = [...interceptors].sort((a, b) => {
+            const distA = VectorMath.distance(a.transform.coords, attackerPos);
+            const distB = VectorMath.distance(b.transform.coords, attackerPos);
+            if (Math.abs(distA - distB) > 0.1) return distA - distB;
+
+            const ratingA = a.formationContext?.interceptConfig?.interceptionRating ?? 0;
+            const ratingB = b.formationContext?.interceptConfig?.interceptionRating ?? 0;
+            return ratingB - ratingA;
+        });
+
+        return sorted[0];
+    }
+
+    /**
+     * 计算拦截协同加成
+     */
+    public static calculateCoopBonus(
+        interceptors: Entity[],
+        bonusPerAlly: number = 2,
+        maxBonus: number = 6
+    ): number {
+        const eligibleCount = interceptors.filter(e =>
+            e.formationContext?.interceptConfig
+        ).length;
+        if (eligibleCount <= 1) return 0;
+        return Math.min((eligibleCount - 1) * bonusPerAlly, maxBonus);
+    }
 }

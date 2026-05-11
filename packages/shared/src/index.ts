@@ -34,6 +34,43 @@ export interface DamageFalloffConfig {
   minDamagePercent: number;    // 最低伤害百分比 (0-1)
 }
 
+// ==========================================
+// 1c. 阵型与拦截系统类型 (Phase 3.5)
+// ==========================================
+export interface InterceptConfig {
+  interceptRange: number;          // 拦截范围
+  interceptionRating: number;      // 拦截判定值
+  coopBonusPerAlly?: number;       // 每多一护卫协同加成
+  maxCoopBonus?: number;           // 协同加成上限
+  interceptDamageReduction: number; // 成功拦截后伤害减免比例 (0-1)
+  failurePenaltyPoise: number;     // 拦截失败韧性质损
+  failureKnockback: number;        // 拦截失败击退距离
+}
+
+export interface BlockZoneDef {
+  id: string;
+  center: Vector3D;
+  radius: number;
+  durationTicks: number;
+  triggerDamage: number;           // 进入区域触发伤害
+  ownerId: EntityId;
+}
+
+export interface EntityFormation {
+  interceptConfig?: InterceptConfig;
+  bodyBlocking?: boolean;          // 是否能阻挡路径
+  blockZones?: BlockZoneDef[];     // 当前维护的封锁区域
+}
+
+export interface InterceptionResult {
+  success: boolean;
+  interceptorId: EntityId;
+  interceptValue: number;
+  attackValue: number;
+  reducedDamage: number;           // 成功拦截后减免的伤害
+  penaltyApplied?: string;         // 失败惩罚类型 (STAGGER)
+}
+
 export interface Transform {
     coords: Vector3D;
     planeId: PlaneId;       
@@ -220,6 +257,11 @@ export interface Entity {
     bodyParts?: Record<string, BodyPartState>;  // 部位破坏状态（仅要害优先路线使用）
     coverState?: CoverState;                    // Phase 3.3: 掩体状态
     currentStance?: TacticalStance;             // Phase 3.3: 战术姿态
+    bodyBlocking?: boolean;                    // Phase 3.5: 能否阻挡路径
+    formationContext?: {                        // Phase 3.5: 阵型上下文
+        interceptConfig?: InterceptConfig;
+        blockZones?: BlockZoneDef[];
+    };
 
     // 状态机上下文：记录当前正在执行的长前摇动作或移动
     currentActionContext?: {
