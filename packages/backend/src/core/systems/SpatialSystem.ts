@@ -303,4 +303,156 @@ export class SpatialSystem {
 
         return baseZ + arcOffset;
     }
+
+    // ============================================
+    // 空间战术 (Spatial Tactics — Phase 3.4)
+    // ============================================
+
+    /**
+     * 计算从当前朝向转向目标方向所需的最小角度差（0~180）
+     */
+    public static turnAngle(currentFacing: number, targetFacing: number): number {
+        const diff = ((targetFacing - currentFacing) % 360 + 540) % 360 - 180;
+        return Math.abs(diff);
+    }
+
+    /**
+     * 计算转身所需 Tick
+     * @param angle 需要转过的角度
+     * @param turnRate 每 Tick 可转角度（默认 45°）
+     */
+    public static turnTime(angle: number, turnRate: number = 45): number {
+        if (angle <= 0) return 0;
+        return Math.ceil(angle / turnRate);
+    }
+
+    /**
+     * 判断目标是否在攻击者的前方扇形区域内
+     * @param attackerFacing 攻击者朝向（度）
+     * @param toTargetAngle  指向目标的绝对角度（度）
+     * @param arc 前方扇形半角（默认 90°）
+     */
+    public static isInFrontArc(
+        attackerFacing: number,
+        toTargetAngle: number,
+        arc: number = 90
+    ): boolean {
+        const diff = ((toTargetAngle - attackerFacing) % 360 + 540) % 360 - 180;
+        return Math.abs(diff) <= arc;
+    }
+
+    /**
+     * 判断攻击者是否在目标的后方（背刺判定用）
+     * @param targetFacing    目标朝向
+     * @param toAttackerAngle 指向攻击者的绝对角度
+     * @param backArc 后方扇形半角（默认 90°）
+     */
+    public static isBehind(
+        targetFacing: number,
+        toAttackerAngle: number,
+        backArc: number = 90
+    ): boolean {
+        const diff = ((toAttackerAngle - targetFacing + 180) % 360 + 540) % 360 - 180;
+        return Math.abs(diff) <= backArc;
+    }
+
+    /**
+     * 完整背刺判定
+     * @returns 是否背刺成功（攻击者在目标背后）
+     */
+    public static isBackstab(attacker: Entity, target: Entity): boolean {
+        const toAttackerAngle = Math.atan2(
+            attacker.transform.coords.y - target.transform.coords.y,
+            attacker.transform.coords.x - target.transform.coords.x
+        ) * (180 / Math.PI);
+        const normalizedAngle = (toAttackerAngle + 360) % 360;
+        return this.isBehind(target.transform.facing, normalizedAngle);
+    }
+
+    /**
+     * 获取两个实体之间的绝对角度
+     */
+    public static angleBetween(from: Entity, to: Entity): number {
+        const dx = to.transform.coords.x - from.transform.coords.x;
+        const dy = to.transform.coords.y - from.transform.coords.y;
+        const angle = Math.atan2(dy, dx) * (180 / Math.PI);
+        return (angle + 360) % 360;
+    }
+
+    /**
+     * 计算冲刺移动的 Tick 消耗（连续移动递减加速）
+     */
+    public static sprintTickCost(
+        consecutiveMoves: number,
+        baseTickCost: number,
+        reductionPerStep: number = 0.1,
+        maxReduction: number = 0.5,
+        minCost: number = 1
+    ): number {
+        if (consecutiveMoves <= 0) return baseTickCost;
+        const reduction = Math.min(consecutiveMoves * reductionPerStep, maxReduction);
+        return Math.max(Math.round(baseTickCost * (1 - reduction)), minCost);
+    }
+
+    /**
+     * 检查冲刺是否中断（超过阈值未移动）
+     */
+    public static isSprintBroken(
+        currentTick: number,
+        lastMoveTick: number,
+        breakThreshold: number = 20
+    ): boolean {
+        return (currentTick - lastMoveTick) > breakThreshold;
+    }
+
+    /**
+     * 获取冲刺等级（用于视觉/动量效果）
+     */
+    public static sprintLevel(consecutiveMoves: number): number {
+        if (consecutiveMoves <= 1) return 0;
+        if (consecutiveMoves <= 3) return 1;
+        if (consecutiveMoves <= 5) return 2;
+        return 3;
+    }
+
+    /**
+     * 检查目标是否在武器触及范围内
+     */
+    public static isInReach(dist: number, maxReach: number, minReach?: number): boolean {
+        if (minReach && dist < minReach) return false;
+        return dist <= maxReach;
+    }
+
+    /**
+     * 计算极限距离死角惩罚
+     */
+    public static deadZonePenalty(dist: number, maxReach: number): number {
+        if (dist > maxReach) return -1;
+        if (maxReach <= 0) return 0;
+
+        const effectiveZone = maxReach * 0.7;
+        if (dist <= effectiveZone) return 0;
+
+        const deadZoneRatio = (dist - effectiveZone) / (maxReach - effectiveZone);
+        return Math.round(deadZoneRatio * 4);
+    }
+
+    /**
+     * 计算长武器贴太近惩罚
+     */
+    public static tooClosePenalty(dist: number, minReach: number): number {
+        if (minReach <= 0 || dist >= minReach) return 0;
+        return Math.ceil((minReach - dist) / minReach * 3);
+    }
+
+    /**
+     * 获取有效攻击范围描述
+     */
+    public static describeRange(dist: number, maxReach: number, minReach: number = 0): string {
+        if (dist > maxReach) return 'OUT_OF_RANGE';
+        if (minReach > 0 && dist < minReach) return 'TOO_CLOSE';
+        const deadZone = maxReach * 0.7;
+        if (dist > deadZone) return 'DEAD_ZONE';
+        return 'SWEET_SPOT';
+    }
 }

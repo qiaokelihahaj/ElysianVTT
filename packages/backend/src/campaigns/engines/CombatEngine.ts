@@ -22,7 +22,8 @@ import { Logger } from '../../utils/Logger.js';
 import { HookRegistry } from './HookRegistry.js';
 import type { RulePackDefs } from '@hard-vtt/shared';
 import { Projectile } from '../../core/entities/Projectile.js';
-import type { ProjectileAdvanceEvent, CollisionResult } from '@hard-vtt/shared';
+import { CoverService } from '../../core/systems/CoverService.js';
+import type { ProjectileAdvanceEvent, CollisionResult, TacticalStance } from '@hard-vtt/shared';
 
 const MOVE_INTERVAL_TICKS = 10;
 const MOVE_STEP_SIZE = 1.0;
@@ -84,7 +85,7 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
     }
 
     private logCtx() {
-        return { tick: this.tickLoop.getCurrentTick(), sceneId: this.engineId };
+        return { tick: this.tickLoop.getCurrentTick(), sceneId: this.engineId, entities: this.entities };
     }
 
     public getAllEntities(): Entity[] {
@@ -232,6 +233,11 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             this.logger.warn(`GAMBIT_PRESET not yet implemented for ${actor.id}`, null, this.logCtx());
             return;
         }
+
+        if (intent.intentType === 'CHANGE_STANCE' && intent.payload.stance) {
+            this.handleStanceIntent(actor, intent.payload.stance);
+            return;
+        }
     }
 
     private handleBatchCast(batchIntents: ClientIntent['payload']['batchIntents']): void {
@@ -270,11 +276,29 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             null, LogVisibility.PLAYER, this.logCtx()
         );
 
+        // Phase 3.4: 冲刺动量追踪 — 检查是否中断或继续
+        const ctx = actor.currentActionContext;
+        let consecutiveMoves = ctx?.consecutiveMoves ?? 0;
+        const lastMoveTick = ctx?.lastMoveTick ?? 0;
+
+        if (SpatialSystem.isSprintBroken(this.currentTick, lastMoveTick, 20)) {
+            consecutiveMoves = 0; // 超时中断，重置冲刺
+        }
+
+        // 使用冲刺加速后的 Tick 消耗
+        const moveInterval = SpatialSystem.sprintTickCost(
+            consecutiveMoves,
+            MOVE_INTERVAL_TICKS,
+            0.1,
+            0.5,
+            1
+        );
+
         const ct = this.currentTick;
         const evt: ActionExecutionEvent = {
             eventId: generateId(),
             eventType: 'ACTION_PHASE',
-            targetTick: ct + MOVE_INTERVAL_TICKS,
+            targetTick: ct + moveInterval,
             status: 'PENDING',
             actorId: actor.id,
             actionTemplateId: '__BUILTIN_MOVE__',
@@ -283,6 +307,9 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
 
         this.eventQueue.push(evt);
 
+        // 更新冲刺计数
+        const newConsecutiveMoves = consecutiveMoves + 1;
+
         actor.currentActionContext = {
             type: 'MOVING',
             actionId: evt.eventId,
@@ -290,14 +317,22 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             resolveTick: evt.targetTick,
             pulseCount: 0,
             waypoints,
-            currentWaypointIndex: 0
+            currentWaypointIndex: 0,
+            consecutiveMoves: newConsecutiveMoves,
+            lastMoveTick: this.currentTick
         };
+
+        this.logger.game(
+            `🏃 [Sprint] Tick ${this.currentTick}: ${actor.id} 冲刺 x${newConsecutiveMoves}, 间隔=${moveInterval} Tick`,
+            { actorId: actor.id, consecutiveMoves: newConsecutiveMoves, interval: moveInterval },
+            LogVisibility.PLAYER, this.logCtx()
+        );
 
         // 广播时间轴数据
         const moveActiveTicks: number[] = [];
         let moveTick = evt.targetTick;
         for (let i = 0; i < waypoints.length; i++) {
-            moveActiveTicks.push(moveTick + i * MOVE_INTERVAL_TICKS);
+            moveActiveTicks.push(moveTick + i * moveInterval);
         }
         const moveEndTick = evt.targetTick + (waypoints.length - 1) * MOVE_INTERVAL_TICKS + 1 + MOVE_RECOVERY_TICKS;
         const movePayload: ActionScheduledPayload = {
@@ -1324,10 +1359,23 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
 
         ctx.pulseCount = (ctx.pulseCount ?? 0) + 1;
 
+        // Phase 3.4: 更新冲刺状态
+        ctx.lastMoveTick = this.currentTick;
+        ctx.consecutiveMoves = (ctx.consecutiveMoves ?? 0) + 1;
+
+        // Phase 3.4: 使用冲刺加速后的步间隔
+        const sprintInterval = SpatialSystem.sprintTickCost(
+            (ctx.consecutiveMoves ?? 0) - 1, // 前一次移动次数作为加速依据
+            MOVE_INTERVAL_TICKS,
+            0.1,
+            0.5,
+            1
+        );
+
         const nextIndex = index + 1;
         if (nextIndex < waypoints.length) {
             ctx.currentWaypointIndex = nextIndex;
-            this.pushNextPulse(actor, actEvent, MOVE_INTERVAL_TICKS);
+            this.pushNextPulse(actor, actEvent, sprintInterval);
         } else {
             this.logger.game(
                 `✅ [Move] Tick ${this.currentTick}: ${actor.id} 到达目的地，进入收招`,
@@ -1375,6 +1423,24 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         // === STARTUP (第一个或递归脉冲): 执行效果 + 决定后续 ===
         const template = Dictionary.getAction(actEvent.actionTemplateId);
         if (!template) return;
+
+        // === 内置动作: 姿态切换 ===
+        if (actEvent.actionTemplateId === '__BUILTIN_STANCE__') {
+            const pendingStance = (actor as any)._pendingStance as TacticalStance;
+            if (pendingStance) {
+                actor.currentStance = pendingStance;
+                delete (actor as any)._pendingStance;
+                this.recordMutation(actor.id, { 'currentStance': pendingStance });
+                this.logger.game(
+                    `🔄 [Stance] Tick ${this.currentTick}: ${actor.id} 姿态切换完成 → ${pendingStance}`,
+                    { actorId: actor.id, stance: pendingStance },
+                    LogVisibility.PLAYER, this.logCtx()
+                );
+            }
+            actor.currentActionContext = undefined;
+            this.recordMutation(actor.id, { 'currentActionContext': null });
+            return;
+        }
 
         const targets = (actEvent.targetIds || [])
             .map(id => this.entities.get(id))
@@ -1501,9 +1567,110 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             return;
         }
 
-        const mutations = EffectSystem.applyAction(template, actor, targets, this.logCtx(), (target) => {
-            this.cancelCurrentAction(target);
+        // === 掩体判定 (Phase 3.3): 命中前检查目标掩体状态 ===
+        const coverDrMap = new Map<string, number>();
+        const filteredTargets = targets.filter(target => {
+            // 跳过弹道实体（弹道系统自己处理碰撞）
+            if (target.type === 'PROJECTILE') return true;
+
+            const cover = CoverService.getCoverBetween(actor.transform.coords, target);
+            if (!cover) return true; // 无掩体
+
+            // 掷 d20 判定掩体碰撞
+            const d20 = Math.floor(Math.random() * 20) + 1;
+            const stance = target.currentStance ?? 'NONE';
+            const accuracyMod = CoverService.getAccuracyModifier(stance);
+            const adjustedRoll = Math.max(1, Math.min(20, d20 + accuracyMod));
+
+            const { penetrates, hitsCover } = CoverService.checkCoverPenetration(cover, adjustedRoll);
+
+            if (penetrates) {
+                // 穿透掩体：应用掩体 DR
+                if (cover.coverDr > 0) {
+                    coverDrMap.set(target.id, cover.coverDr);
+                }
+
+                // ADS 姿态：通过过滤部位命中表来限制暴露部位
+                if (stance === 'ADS') {
+                    const exposed = CoverService.getExposedParts('ADS');
+                    this.logger.game(
+                        `🎯 [Cover] Tick ${this.currentTick}: ${target.id} ADS姿态, 暴露部位: [${exposed.join(', ')}]`,
+                        { targetId: target.id, stance, exposedParts: exposed },
+                        LogVisibility.PLAYER, this.logCtx()
+                    );
+                }
+
+                this.logger.game(
+                    `🎯 [Cover] Tick ${this.currentTick}: ${actor.id} 的攻击穿透 ${target.id} 的${cover.coverType === 'FULL' ? '全' : '半'}掩体 (d20=${d20}, adj=${adjustedRoll}, thr=${cover.coverThreshold})`,
+                    { actorId: actor.id, targetId: target.id, d20, adjustedRoll, threshold: cover.coverThreshold },
+                    LogVisibility.PLAYER, this.logCtx()
+                );
+                return true;
+            } else {
+                // 命中掩体
+                this.logger.game(
+                    `🧱 [Cover] Tick ${this.currentTick}: ${actor.id} 的攻击命中 ${target.id} 的${cover.coverType === 'FULL' ? '全' : '半'}掩体 (d20=${d20}, adj=${adjustedRoll}, thr=${cover.coverThreshold})`,
+                    { actorId: actor.id, targetId: target.id, d20, adjustedRoll, threshold: cover.coverThreshold },
+                    LogVisibility.PLAYER, this.logCtx()
+                );
+
+                this.emit('VISUAL_FX', {
+                    tick: this.currentTick,
+                    events: [{
+                        eventId: generateId(),
+                        eventType: 'COLLISION',
+                        sourceId: actor.id,
+                        targetId: target.id,
+                        fxTemplateId: 'cover_hit',
+                        durationMs: 500,
+                        text: '🧱 命中掩体!'
+                    }]
+                });
+                return false; // 从目标列表中移除
+            }
         });
+
+        // === 触及/死角判定 (Phase 3.4): 排除超出触及范围的目标 ===
+        // 覆盖 whiff 检测，提供更细粒度的死角/贴太近惩罚
+        const maxReachFromTemplate = template.range?.distanceExpr
+            ? Math.abs(RuleEvaluator.evaluate(template.range.distanceExpr, { actor }).total)
+            : 999;
+        const minReach = 0; // 武器最小有效距离（可由模板参数传入）
+        const outOfReachTargets: EntityId[] = [];
+        for (const target of filteredTargets) {
+            const dist = VectorMath.distance(actor.transform.coords, target.transform.coords);
+            if (!SpatialSystem.isInReach(dist, maxReachFromTemplate, minReach)) {
+                outOfReachTargets.push(target.id);
+                this.logger.game(
+                    `💨 [Reach] Tick ${this.currentTick}: ${target.id} 超出 ${actor.id} 的触及范围 (距离=${dist.toFixed(1)}, 最大=${maxReachFromTemplate})`,
+                    { actorId: actor.id, targetId: target.id, dist, maxReach: maxReachFromTemplate },
+                    LogVisibility.PLAYER, this.logCtx()
+                );
+            }
+        }
+
+        // === 背刺判定 (Phase 3.4): 检查攻击者是否在目标背后 ===
+        let isBackstabAttack = false;
+        for (const target of filteredTargets) {
+            if (outOfReachTargets.includes(target.id)) continue;
+            if (SpatialSystem.isBackstab(actor, target)) {
+                isBackstabAttack = true;
+                this.logger.game(
+                    `🗡️ [Backstab] Tick ${this.currentTick}: ${actor.id} 在 ${target.id} 背后攻击!`,
+                    { actorId: actor.id, targetId: target.id },
+                    LogVisibility.PLAYER, this.logCtx()
+                );
+            }
+        }
+
+        // 从目标列表中移除超出触及范围的目标
+        const reachFilteredTargets = filteredTargets.filter(
+            t => !outOfReachTargets.includes(t.id)
+        );
+
+        const mutations = EffectSystem.applyAction(template, actor, reachFilteredTargets, this.logCtx(), (target) => {
+            this.cancelCurrentAction(target);
+        }, coverDrMap);
 
         const affectedIds: EntityId[] = [];
         for (const [targetId, changes] of mutations.entries()) {
@@ -1763,6 +1930,48 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             { projectileId: projectile.id, collisionResult: projectile.collisionResult },
             LogVisibility.PLAYER, this.logCtx()
         );
+    }
+
+    // ============================================================
+    //  战术姿态切换 (Phase 3.3)
+    // ============================================================
+
+    private handleStanceIntent(actor: Entity, targetStance: TacticalStance): void {
+        const cost = CoverService.getSwitchCost(targetStance);
+
+        this.logger.game(
+            `🔄 [Stance] Tick ${this.currentTick}: ${actor.id} 切换姿态 ${actor.currentStance ?? 'NONE'} → ${targetStance} (消耗 ${cost} Tick)`,
+            { actorId: actor.id, from: actor.currentStance ?? 'NONE', to: targetStance, cost },
+            LogVisibility.PLAYER, this.logCtx()
+        );
+
+        // 姿态切换消耗 Tick（通过推入一个 STARTUP 事件模拟延迟）
+        if (cost > 0) {
+            const evt: ActionExecutionEvent = {
+                eventId: generateId(),
+                eventType: 'ACTION_PHASE',
+                targetTick: this.currentTick + cost,
+                status: 'PENDING',
+                actorId: actor.id,
+                actionTemplateId: '__BUILTIN_STANCE__',
+                phase: 'STARTUP'
+            };
+            this.eventQueue.push(evt);
+
+            actor.currentActionContext = {
+                type: 'CASTING',
+                actionId: evt.eventId,
+                actionTemplateId: '__BUILTIN_STANCE__',
+                phase: 'STARTUP',
+                resolveTick: evt.targetTick
+            };
+
+            // 存储目标姿态，在事件结算时应用
+            (actor as any)._pendingStance = targetStance;
+        } else {
+            actor.currentStance = targetStance;
+            this.recordMutation(actor.id, { 'currentStance': targetStance });
+        }
     }
 
     /** 设置障碍物列表（用于弹道碰撞检测） */

@@ -78,11 +78,11 @@ export class CoverService {
         const facingX = Math.cos(coverFacingRad);
         const facingY = Math.sin(coverFacingRad);
 
-        // 点积：判断攻击者是否在掩体正面（朝向方向）
-        // 如果点积为负，说明攻击者在掩体背面 = 在保护方向内
+        // 点积：判断攻击者是否在掩体正面
+        // 若攻击者方向与掩体朝向同向（点积>0），则攻击来自掩体保护方向
         const dot = dx * facingX + dy * facingY;
 
-        return dot < 0 ? cover : null;
+        return dot > 0 ? cover : null;
     }
 
     /**

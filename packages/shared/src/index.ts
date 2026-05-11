@@ -89,7 +89,30 @@ export interface BodyPartState {
 }
 
 // ==========================================
-// 2b. 掩体系统与战术姿态 (Cover & Stance)
+// 2b. 空间战术 (Spatial Tactics)
+// ==========================================
+export interface ReachConfig {
+  maxReach: number;          // 武器最大触及距离
+  minReach?: number;         // 武器最短有效距离（长武器死角）
+  deadZoneRatio?: number;    // 死角区比例（默认 0.7 = 最后 30%）
+}
+
+export interface FacingCost {
+  turnRate: number;          // 每 Tick 可转角度（默认 45°）
+  baseTurnTicks: number;     // 基础转身耗时
+}
+
+export interface SprintMomentum {
+  consecutiveMoves: number;  // 连续移动次数
+  lastMoveTick: number;      // 上次移动发生的 Tick
+  tickReductionPerStep: number; // 每步递减比例（默认 0.1）
+  minTickCost: number;       // 最小 Tick 消耗（默认 1）
+  maxReduction: number;      // 最大减幅比例（默认 0.5）
+  breakThreshold: number;    // 中断阈值（超时重置，默认 20）
+}
+
+// ==========================================
+// 2c. 掩体系统与战术姿态 (Cover & Stance)
 // ==========================================
 export type CoverType = 'NONE' | 'HALF' | 'FULL';
 
@@ -209,6 +232,8 @@ export interface Entity {
         eventIds?: string[];                           // [deprecated] 递归模式不再需要
         waypoints?: Vector3D[];                        // MOVING 时存储所有航点坐标
         currentWaypointIndex?: number;                 // MOVING 时当前已到达的航点索引
+        consecutiveMoves?: number;                     // Phase 3.4: 冲刺连击计数
+        lastMoveTick?: number;                         // Phase 3.4: 上次移动 Tick
     };
 }
 
