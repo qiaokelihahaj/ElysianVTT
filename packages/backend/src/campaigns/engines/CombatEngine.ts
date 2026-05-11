@@ -1,7 +1,7 @@
 // packages/backend/src/campaigns/engines/CombatEngine.ts
 import { EventEmitter } from 'events';
 import {
-    IEngineInstance, Tick, ClientIntent, Entity, EntityId,
+    IEngineInstance, Tick, ClientIntent, Entity, EntityId, Vector3D, ActionTemplate,
     TickEvent, ActionExecutionEvent, MovementStepEvent, StateMutationPayload,
     ActionScheduledPayload, DecisionPollPayload, DecisionResponsePayload, DecisionOption,
     PlayerPriorityToggle, HookPreset, HookTrigger, LogVisibility, UnifiedHook
@@ -15,11 +15,14 @@ import { Dictionary } from '../../db/Dictionary.js';
 import { RulePackLoader } from '../../db/RulePackLoader.js';
 import { EffectSystem } from '../../core/systems/EffectSystem.js';
 import { SpatialSystem } from '../../core/systems/SpatialSystem.js';
+import { ProjectileSystem } from '../../core/systems/ProjectileSystem.js';
 import { RuleEvaluator } from '../../core/systems/RuleEvaluator.js';
 import { VectorMath } from '../../utils/VectorMath.js';
 import { Logger } from '../../utils/Logger.js';
 import { HookRegistry } from './HookRegistry.js';
 import type { RulePackDefs } from '@hard-vtt/shared';
+import { Projectile } from '../../core/entities/Projectile.js';
+import type { ProjectileAdvanceEvent, CollisionResult } from '@hard-vtt/shared';
 
 const MOVE_INTERVAL_TICKS = 10;
 const MOVE_STEP_SIZE = 1.0;
@@ -33,6 +36,10 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
     private eventQueue = new PriorityQueue();
     private tickLoop = new TickLoop(this.eventQueue);
     private entities = new Map<EntityId, Entity>();
+    /** 活跃弹道追踪 Map<projectileId, Projectile> */
+    private projectiles = new Map<EntityId, Projectile>();
+    /** 障碍物坐标列表（用于弹道碰撞检测） */
+    private obstacles: Vector3D[] = [];
     private combatEnded = false;
     
     private pendingMutations: StateMutationPayload = { tick: 0, mutations: [] };
@@ -1246,6 +1253,8 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             this.resolveActionEvent(event as ActionExecutionEvent);
         } else if ((event as MovementStepEvent).eventType === 'MOVEMENT_STEP') {
             this.resolveMovementStep(event as MovementStepEvent);
+        } else if ((event as ProjectileAdvanceEvent).eventType === 'PROJECTILE_ADVANCE') {
+            this.resolveProjectileAdvance(event as ProjectileAdvanceEvent);
         }
 
         this.checkAndEndCombat();
@@ -1508,6 +1517,11 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         // === 系统钩子: 为有效反应者注册系统钩子 ===
         this.generateSystemHooks(actEvent);
 
+        // === 实体弹道发射 (Phase 3.2): 如果技能配置了弹道，创建并调度投射物 ===
+        if (template.launchProjectile) {
+            this.launchProjectile(actor, actEvent, template);
+        }
+
         const channel = template.channelOptions;
 
         if (channel && (!channel.maxPulses || pulseNum < channel.maxPulses)) {
@@ -1586,6 +1600,174 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         } else {
             this.pushRecovery(actor, prevEvent, template);
         }
+    }
+
+    // ============================================================
+    //  弹道系统 (Phase 3.2)
+    // ============================================================
+
+    /**
+     * 发射投射物：创建 Projectile 实体并预计算边界事件
+     * 在技能效果结算后调用
+     */
+    private launchProjectile(actor: Entity, actEvent: ActionExecutionEvent, template: ActionTemplate): void {
+        const config = template.launchProjectile!;
+        const projectileId = generateId();
+
+        // 确定目标坐标：优先使用目标实体坐标，否则沿朝向发射
+        let targetCoords: Vector3D;
+        const primaryTargetId = actEvent.targetIds?.[0];
+        const primaryTarget = primaryTargetId ? this.entities.get(primaryTargetId) : undefined;
+
+        if (primaryTarget) {
+            targetCoords = { ...primaryTarget.transform.coords };
+        } else if (actor.currentActionContext?.waypoints?.length) {
+            // 如果有移动路径，向路径终点发射
+            const lastWp = actor.currentActionContext.waypoints[actor.currentActionContext.waypoints.length - 1];
+            targetCoords = { ...lastWp };
+        } else {
+            // 默认向 facing 方向发射 5 个单位
+            const facingRad = (actor.transform.facing ?? 0) * (Math.PI / 180);
+            targetCoords = {
+                x: actor.transform.coords.x + Math.cos(facingRad) * 5,
+                y: actor.transform.coords.y + Math.sin(facingRad) * 5,
+                z: actor.transform.coords.z ?? 0
+            };
+        }
+
+        // 创建弹道实体
+        const projectile = new Projectile({
+            id: projectileId,
+            templateId: `proj_${template.id}_${projectileId}`,
+            sourceEntityId: actor.id,
+            sourceActionTemplateId: template.id,
+            transform: {
+                coords: { ...actor.transform.coords },
+                planeId: actor.transform.planeId,
+                facing: actor.transform.facing
+            },
+            physics: {
+                scaleClass: 0,
+                collisionRadius: 0.3,
+                mass: 0.1,
+                movementModes: ['PROJECTILE']
+            },
+            resources: { current: {}, max: {} },
+            trajectoryType: config.trajectoryType,
+            speed: config.speed,
+            maxHeight: config.maxHeight,
+            minRange: config.minRange,
+            collisionDieSize: config.collisionDieSize ?? 20,
+            dieThreshold: config.dieThreshold ?? 10,
+            targetEntityId: primaryTargetId,
+            targetCoords: { ...targetCoords }
+        });
+
+        // 预计算并调度弹道边界事件
+        const events = ProjectileSystem.scheduleProjectile(
+            projectile,
+            { ...actor.transform.coords },
+            targetCoords,
+            this.currentTick,
+            config.ticksPerStep ?? 1
+        );
+
+        // 压入事件队列
+        for (const evt of events) {
+            this.eventQueue.push(evt);
+        }
+
+        // 注册弹道实体
+        this.projectiles.set(projectileId, projectile);
+        this.entities.set(projectileId, projectile);
+
+        this.logger.game(
+            `🎯 [Launch] Tick ${this.currentTick}: ${actor.id} 发射投射物 ${projectileId}` +
+            ` (${config.trajectoryType}, ${events.length} 步) 目标→ (${targetCoords.x.toFixed(1)},${targetCoords.y.toFixed(1)})`,
+            { actorId: actor.id, projectileId, trajectoryType: config.trajectoryType, steps: events.length },
+            LogVisibility.PLAYER, this.logCtx()
+        );
+
+        // 广播投射物创建
+        this.emit('VISUAL_FX', {
+            tick: this.currentTick,
+            events: [{
+                eventId: generateId(),
+                eventType: 'FX_SPAWN',
+                sourceId: actor.id,
+                targetId: projectileId,
+                targetCoords: { ...projectile.transform.coords },
+                fxTemplateId: 'projectile-default',
+                durationMs: 500,
+                text: `🎯 发射 ${template.id}`
+            }]
+        });
+    }
+
+    /**
+     * 处理 PROEJCTILE_ADVANCE 边界事件
+     * 推进弹道并检查碰撞
+     */
+    private resolveProjectileAdvance(evt: ProjectileAdvanceEvent): void {
+        const projectile = this.projectiles.get(evt.projectileId);
+        if (!projectile) {
+            this.logger.warn(`[Projectile] 未找到弹道实体 ${evt.projectileId}`, null, this.logCtx());
+            return;
+        }
+
+        const result = ProjectileSystem.resolveAdvance(
+            projectile,
+            evt,
+            this.entities,
+            this.obstacles
+        );
+
+        // 记录伤害变更
+        for (const [targetId, changes] of result.damageMutations) {
+            this.recordMutation(targetId, changes);
+        }
+
+        // 广播视觉事件
+        for (const ve of result.visualEvents) {
+            this.emit('VISUAL_FX', {
+                tick: this.currentTick,
+                events: [{
+                    eventId: generateId(),
+                    eventType: ve.eventType as any,
+                    sourceId: ve.sourceId,
+                    targetId: ve.targetId,
+                    targetCoords: ve.targetCoords,
+                    fxTemplateId: ve.eventType === 'COLLISION' ? 'collision' : 'projectile_trail',
+                    durationMs: 200,
+                    text: ve.eventType === 'COLLISION' ? '💥 碰撞!' : undefined
+                }]
+            });
+        }
+
+        // 弹道结束：清理
+        if (result.arrived) {
+            this.cleanupProjectile(projectile);
+        }
+    }
+
+    /**
+     * 清理已完成的弹道实体
+     */
+    private cleanupProjectile(projectile: Projectile): void {
+        this.projectiles.delete(projectile.id);
+        this.entities.delete(projectile.id);
+
+        this.logger.game(
+            `🏁 [Projectile] ${projectile.id} 生命周期结束` +
+            (projectile.collisionResult?.targetId ? `, 命中 ${projectile.collisionResult.targetId}` : ''),
+            { projectileId: projectile.id, collisionResult: projectile.collisionResult },
+            LogVisibility.PLAYER, this.logCtx()
+        );
+    }
+
+    /** 设置障碍物列表（用于弹道碰撞检测） */
+    public setObstacles(obstacles: Vector3D[]): void {
+        this.obstacles = obstacles;
     }
 
     // ============================================================

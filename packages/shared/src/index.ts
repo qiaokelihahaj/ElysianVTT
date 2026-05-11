@@ -178,6 +178,15 @@ export interface ActionTemplate {
         pulseResourceCost?: Record<string, ExpressionString>;  // 每次脉冲额外消耗
     };
     rulePackId?: string;
+    launchProjectile?: {              // 实体弹道发射配置（Phase 3.2）
+        trajectoryType: 'LINEAR' | 'PARABOLIC';
+        speed: number;                // 每 Tick 推进速度
+        maxHeight?: number;           // 抛物线最高点 Z
+        minRange?: number;            // 最小射程盲区
+        collisionDieSize?: number;    // 碰撞判定面数（默认 d20）
+        dieThreshold?: number;        // 命中阈值（默认 10）
+        ticksPerStep: number;         // 每步 Tick 间隔
+    };
 }
 
 export interface ActionEffectPayload {
@@ -272,6 +281,34 @@ export interface MovementStepEvent extends TickEvent {
     isLastStep: boolean;        // 是否是最后一步（用于解除移动状态）
 }
 
+// ==========================================
+// 3c. 弹道系统 (Trajectory & Projectile)
+// ==========================================
+export type TrajectoryType = 'LINEAR' | 'PARABOLIC';
+
+export interface ProjectileAdvanceEvent extends TickEvent {
+    eventType: 'PROJECTILE_ADVANCE';
+    projectileId: EntityId;
+    waypointIndex: number;
+    fromCoords: Vector3D;
+    toCoords: Vector3D;
+    isLastStep: boolean;
+}
+
+export interface CollisionRoll {
+    d20: number;
+    threshold: number;       // 尺度级别阈值（碰撞面数）
+    isBlind: boolean;        // true = 非直瞄（碰撞掷骰）
+    bodyPart?: BodyPart;     // Chaotic Impact 随机部位
+}
+
+export interface CollisionResult {
+    hit: boolean;
+    targetId?: EntityId;
+    collisionRoll?: CollisionRoll;
+    impactCoords: Vector3D;
+}
+
 export interface IEngineInstance {
     engineId: string;
     engineType: 'COMBAT' | 'EXPLORE';
@@ -324,7 +361,7 @@ export interface VisualEventPayload {
     tick: Tick;
     events: Array<{
         eventId: string;
-        eventType: 'FX_SPAWN' | 'ANIM_PLAY' | 'SOUND_PLAY' | 'UI_FLOATING_TEXT' | 'MUTUAL_KILL' | 'INTERRUPTED' | 'REACTION_AVAILABLE' | 'WHIFF' | 'DECISION_POLL';
+        eventType: 'FX_SPAWN' | 'ANIM_PLAY' | 'SOUND_PLAY' | 'UI_FLOATING_TEXT' | 'MUTUAL_KILL' | 'INTERRUPTED' | 'REACTION_AVAILABLE' | 'WHIFF' | 'DECISION_POLL' | 'COLLISION' | 'PROJECTILE_FLY';
         sourceId: EntityId;
         targetId?: EntityId;
         targetCoords?: Vector3D;

@@ -1,4 +1,4 @@
-import type { Entity, HexCoord, Vector3D, Tick, MovementStepEvent } from '@hard-vtt/shared';
+import type { Entity, HexCoord, Vector3D, Tick, MovementStepEvent, TrajectoryType } from '@hard-vtt/shared';
 import { VectorMath } from '../../utils/VectorMath.js';
 import { generateId } from '../../utils/IdGenerator.js';
 
@@ -101,5 +101,206 @@ export class SpatialSystem {
             q: coord.q + dq,
             r: coord.r + dr
         }));
+    }
+
+    // ============================================
+    // 弹道路径规划 (Projectile Trajectory)
+    // ============================================
+
+    /**
+     * 预计算弹道路径航点（射线算法）
+     *
+     * @param from            发射坐标
+     * @param to              目标坐标
+     * @param trajectoryType  轨迹类型
+     * @param stepSize        每步推进距离（默认 1.0 网格单位）
+     * @param options         可选: maxHeight（抛物线最高点 Z）,
+     *                              minRange（最小射程内不产生航点）
+     * @returns 从发射到目标的航点列表（不含起点）
+     */
+    public static planProjectilePath(
+        from: Vector3D,
+        to: Vector3D,
+        trajectoryType: TrajectoryType,
+        stepSize: number = 1.0,
+        options?: { maxHeight?: number; minRange?: number }
+    ): Vector3D[] {
+        const totalDist = VectorMath.distance(from, to);
+
+        // 最小射程盲区：距离小于 minRange 时不生成航点（直接到达）
+        if (options?.minRange && totalDist < options.minRange) {
+            return [{ ...to }];
+        }
+
+        if (trajectoryType === 'LINEAR') {
+            return this.planLinearPath(from, to, stepSize);
+        } else {
+            const maxHeight = options?.maxHeight ?? Math.max(totalDist * 0.3, 2.0);
+            return this.planParabolicPath(from, to, stepSize, maxHeight);
+        }
+    }
+
+    /**
+     * 直射弹道：贴地平飞，逐网格推进
+     * 航点 Z 值保持与起点一致（地面高度）
+     */
+    private static planLinearPath(
+        from: Vector3D,
+        to: Vector3D,
+        stepSize: number
+    ): Vector3D[] {
+        const waypoints: Vector3D[] = [];
+        let cursor = { ...from };
+
+        // 确保地面高度一致
+        const groundZ = from.z ?? 0;
+
+        while (VectorMath.distance(cursor, to) > stepSize * 0.1) {
+            cursor = VectorMath.stepTowards(cursor, to, stepSize);
+            waypoints.push({ x: cursor.x, y: cursor.y, z: groundZ });
+        }
+
+        // 确保终点包含
+        if (waypoints.length === 0 || VectorMath.distance(waypoints[waypoints.length - 1], to) > 0.01) {
+            waypoints.push({ ...to, z: groundZ });
+        }
+
+        return waypoints;
+    }
+
+    /**
+     * 抛物线弹道：升弧段→降弧段
+     * 使用二次贝塞尔插值计算弹道上各点 Z 值
+     *
+     * 升弧段：Z 逐渐上升至 maxHeight
+     * 降弧段：Z 从 maxHeight 下降至目标 Z
+     *
+     * @param from      起点
+     * @param to        终点
+     * @param stepSize  步长
+     * @param maxHeight 最高点 Z 值
+     */
+    private static planParabolicPath(
+        from: Vector3D,
+        to: Vector3D,
+        stepSize: number,
+        maxHeight: number
+    ): Vector3D[] {
+        const waypoints: Vector3D[] = [];
+        const totalDist = VectorMath.distance(from, to);
+        const steps = Math.max(2, Math.ceil(totalDist / stepSize));
+
+        const fromZ = from.z ?? 0;
+        const toZ = to.z ?? 0;
+
+        for (let i = 1; i <= steps; i++) {
+            const t = i / steps;  // 0..1 插值参数
+
+            // XY 线性插值
+            const x = from.x + (to.x - from.x) * t;
+            const y = from.y + (to.y - from.y) * t;
+
+            // Z 抛物线插值：使用二次函数 h(t) = 4 * maxHeight * t * (1 - t)
+            // 在 t=0.5 时达到最高点，在 t=0 和 t=1 时回到起/终点高度
+            const baseZ = fromZ + (toZ - fromZ) * t;
+            const arcOffset = 4 * maxHeight * t * (1 - t);
+            const z = baseZ + arcOffset;
+
+            waypoints.push({ x, y, z });
+        }
+
+        return waypoints;
+    }
+
+    /**
+     * 检查直线段上是否有障碍物阻挡（简单的线段求交检测）
+     * 用于抛物线越障检查和射击视线判断
+     *
+     * @param from        起点
+     * @param to          终点
+     * @param obstacles   障碍物坐标列表（只检查 Z 值超过弹道高度的障碍物）
+     * @param clearanceZ  越障净高（弹道必须高于障碍物至少此值）
+     * @returns           阻挡的障碍物坐标（无阻挡则 null）
+     */
+    public static checkObstacle(
+        from: Vector3D,
+        to: Vector3D,
+        obstacles: Vector3D[],
+        clearanceZ: number = 0.5
+    ): Vector3D | null {
+        const fromZ = from.z ?? 0;
+        const toZ = to.z ?? 0;
+
+        for (const obs of obstacles) {
+            const obsZ = obs.z ?? 0;
+
+            // 计算弹道在障碍物处的 Z 高度（线性插值）
+            const totalDist = VectorMath.distance(from, to);
+            const distToObs = VectorMath.distance(from, obs);
+
+            if (totalDist === 0) continue;
+
+            const t = distToObs / totalDist;
+            const pathZ = fromZ + (toZ - fromZ) * t;
+
+            // 障碍物 Z 值超过弹道高度 → 阻挡
+            if (obsZ > pathZ + clearanceZ) {
+                // 检查障碍物是否在弹道路径附近（水平距离小于 1 单位）
+                const horizDist = VectorMath.distance(
+                    { x: from.x, y: from.y, z: 0 },
+                    { x: obs.x, y: obs.y, z: 0 }
+                );
+                const progressDist = horizDist * t;
+
+                // 粗略检查：障碍物到弹道线的垂距
+                const dx = to.x - from.x;
+                const dy = to.y - from.y;
+                const len = Math.sqrt(dx * dx + dy * dy);
+                if (len === 0) continue;
+
+                // 点到线段距离公式
+                const tProj = ((obs.x - from.x) * dx + (obs.y - from.y) * dy) / (len * len);
+                if (tProj < 0 || tProj > 1) continue;  // 不在线段范围内
+
+                const projX = from.x + tProj * dx;
+                const projY = from.y + tProj * dy;
+                const perpDist = VectorMath.distance(
+                    { x: obs.x, y: obs.y, z: 0 },
+                    { x: projX, y: projY, z: 0 }
+                );
+
+                if (perpDist < 1.0) {
+                    return obs;  // 阻挡
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * 计算抛物线弹道在给定水平位置上的高度
+     * 用于越障检查
+     */
+    public static getParabolicHeight(
+        from: Vector3D,
+        to: Vector3D,
+        currentX: number,
+        currentY: number,
+        maxHeight: number
+    ): number {
+        const totalDist = VectorMath.distance(from, to);
+        const currentPos = { x: currentX, y: currentY, z: 0 };
+        const progress = VectorMath.distance(from, currentPos);
+
+        if (totalDist === 0) return from.z ?? 0;
+
+        const t = progress / totalDist;
+        const fromZ = from.z ?? 0;
+        const toZ = to.z ?? 0;
+        const baseZ = fromZ + (toZ - fromZ) * t;
+        const arcOffset = 4 * maxHeight * t * (1 - t);
+
+        return baseZ + arcOffset;
     }
 }
