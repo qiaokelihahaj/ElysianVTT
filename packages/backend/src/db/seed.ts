@@ -207,6 +207,50 @@ async function main() {
         }
     });
 
+    // PRECISION_STRIKE: 要害攻击 (部位判定 + 暴击)
+    await prisma.actionTemplate.upsert({
+        where: { id: 'PRECISION_STRIKE' },
+        update: {},
+        create: {
+            id: 'PRECISION_STRIKE',
+            name: '要害攻击',
+            rulePackId: 'elysian',
+            startupTicks: 12,
+            recoveryTicks: 8,
+            effectsJson: JSON.stringify([
+                {
+                    type: 'DAMAGE',
+                    targetSelector: 'PRIMARY',
+                    parameters: {
+                        resource: 'hp',
+                        amountExpr: 'actor.str + 2d6',
+                        route: 'PRECISION',
+                        critRange: 17,
+                        critMultiplier: 2.0,
+                        hitTable: [
+                            { part: 'HEAD', weight: 10, damageCap: 30, critMultiplier: 3.0 },
+                            { part: 'TORSO', weight: 40, damageCap: 80 },
+                            { part: 'LEFT_ARM', weight: 15, damageCap: 25, critMultiplier: 1.5 },
+                            { part: 'RIGHT_ARM', weight: 15, damageCap: 25, critMultiplier: 1.5 },
+                            { part: 'LEFT_LEG', weight: 10, damageCap: 30 },
+                            { part: 'RIGHT_LEG', weight: 10, damageCap: 30 }
+                        ]
+                    }
+                },
+                {
+                    type: 'DAMAGE',
+                    targetSelector: 'PRIMARY',
+                    parameters: { resource: 'poise', amountExpr: '5' }
+                }
+            ]),
+            tagsJson: JSON.stringify(['ATTACK', 'MELEE', 'PRECISION']),
+            resourceCostJson: JSON.stringify({ poise: '8', focus: '5' }),
+            rangeJson: JSON.stringify({ type: 'MELEE', distanceExpr: '1.5' }),
+            priorityExpr: 'actor.dex + 12',
+            sustainResourcesJson: JSON.stringify(['poise'])
+        }
+    });
+
     // 2. 播种角色数据
     await prisma.characterSheet.upsert({
         where: { id: 'actor_warrior' },

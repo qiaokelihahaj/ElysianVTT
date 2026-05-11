@@ -1,6 +1,7 @@
 // packages/backend/src/core/systems/EffectSystem.ts
-import { Entity, ActionTemplate, ActionEffectPayload, DiceRule, LogVisibility } from '@hard-vtt/shared';
+import { Entity, ActionTemplate, ActionEffectPayload, DiceRule, LogVisibility, HitLocationEntry, CritConfig } from '@hard-vtt/shared';
 import { RuleEvaluator } from './RuleEvaluator.js';
+import { BodyPartResolver } from './BodyPartResolver.js';
 import { Logger } from '../../utils/Logger.js';
 
 const logger = Logger.create('System:Effect');
@@ -72,18 +73,90 @@ export class EffectSystem {
             return;
         }
 
-        const { total: amount } = RuleEvaluator.evaluate(expr, { actor, target, diceRules: template.diceRules });
+        const { total: amount, rolls } = RuleEvaluator.evaluate(expr, { actor, target, diceRules: template.diceRules });
 
         switch (effect.type) {
             case 'DAMAGE': {
                 let effectiveAmount = amount;
+                const poolTags: string[] = rolls?.poolTags ?? [];
+
+                // ── 要害优先路线：部位判定 + 暴击 + 截断 ──
+                const route: string | undefined = effect.parameters.route;
+                if (route === 'PRECISION' && effect.parameters.hitTable && target.bodyParts) {
+                    const hitTable = effect.parameters.hitTable as HitLocationEntry[];
+                    const critConfig: CritConfig = {
+                        range: effect.parameters.critRange ?? 20,
+                        defaultMultiplier: effect.parameters.critMultiplier ?? 2.0
+                    };
+                    const d100 = BodyPartResolver.rollD100();
+                    const d20 = BodyPartResolver.rollD20();
+
+                    const hitResult = BodyPartResolver.resolveHit(
+                        amount, hitTable, d100, d20, critConfig, target.bodyParts, poolTags
+                    );
+
+                    effectiveAmount = hitResult.cappedDamage;
+
+                    if (hitResult.partDestroyed) {
+                        logger.game(
+                            `🎯 [Precision] ${target.id} 的 [${hitResult.part}] 已破坏 → 打空!`,
+                            { actionId: template.id, targetId: target.id, part: hitResult.part },
+                            LogVisibility.PLAYER, engineCtx
+                        );
+                        break; // 无伤害，跳过后续
+                    }
+
+                    if (hitResult.isCrit) {
+                        logger.game(
+                            `💥 [Crit!] ${actor.id} 暴击命中 ${target.id} 的 [${hitResult.part}]! 倍率 x${hitResult.critMultiplier} (${amount}→${hitResult.rawDamage})`,
+                            { actionId: template.id, targetId: target.id, part: hitResult.part, critMultiplier: hitResult.critMultiplier },
+                            LogVisibility.PLAYER, engineCtx
+                        );
+                    }
+
+                    if (hitResult.overflowDamage > 0) {
+                        logger.game(
+                            `🛡️ [Cap] 部位 [${hitResult.part}] 伤害截断: ${hitResult.rawDamage} → ${hitResult.cappedDamage} (溢出 ${hitResult.overflowDamage})`,
+                            { actionId: template.id, targetId: target.id, part: hitResult.part },
+                            LogVisibility.PLAYER, engineCtx
+                        );
+                    }
+
+                    // 更新部位 HP 状态
+                    if (effectiveAmount > 0) {
+                        const partResult = BodyPartResolver.applyPartDamage(
+                            target.bodyParts!, hitResult.part, hitResult.cappedDamage
+                        );
+                        if (partResult.destroyed) {
+                            logger.game(
+                                `💀 [Break!] ${target.id} 的 [${hitResult.part}] 被破坏!`,
+                                { targetId: target.id, part: hitResult.part },
+                                LogVisibility.PLAYER, engineCtx
+                            );
+                        }
+                        // 记录部位状态变更
+                        const partState = target.bodyParts![hitResult.part];
+                        recordChange(target.id, `bodyParts.${hitResult.part}`, {
+                            currentHp: partState.currentHp,
+                            maxHp: partState.maxHp,
+                            destroyed: partState.destroyed
+                        });
+                    }
+
+                    logger.game(
+                        `🎯 [Precision] ${actor.id} 命中 ${target.id} 的 [${hitResult.part}] (d100=${d100}, d20=${d20}), 有效伤害=${effectiveAmount}`,
+                        { actionId: template.id, targetId: target.id, part: hitResult.part, d100, d20 },
+                        LogVisibility.PLAYER, engineCtx
+                    );
+                }
                 const ignoreDr = effect.parameters.ignoreDr === true;
                 if (!ignoreDr) {
                     const dr = target.resources.current.armor ?? target.resources.current.dr ?? 0;
                     if (dr > 0) {
-                        effectiveAmount = Math.max(0, amount - dr);
-                        if (effectiveAmount !== amount) {
-                            logger.game(`🛡️ [DR] ${target.id} 的护甲减免了 ${amount - effectiveAmount} 点伤害 (DR=${dr})`, null, LogVisibility.PLAYER, engineCtx);
+                        const beforeDR = effectiveAmount;
+                        effectiveAmount = Math.max(0, effectiveAmount - dr);
+                        if (effectiveAmount !== beforeDR) {
+                            logger.game(`🛡️ [DR] ${target.id} 的护甲减免了 ${beforeDR - effectiveAmount} 点伤害 (DR=${dr})`, null, LogVisibility.PLAYER, engineCtx);
                         }
                     }
                 }

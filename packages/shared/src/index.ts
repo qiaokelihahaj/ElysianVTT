@@ -35,6 +35,39 @@ export type EntityId = string;
 // AttackTag 用于微闪避系统（micro-evasion）的攻击标签
 export type AttackTag = 'HIGH' | 'LOW' | 'LINEAR';
 
+// ==========================================
+// 部位破坏与重击系统 (Body Part & Crit)
+// ==========================================
+export type BodyPart = 'HEAD' | 'TORSO' | 'LEFT_ARM' | 'RIGHT_ARM' | 'LEFT_LEG' | 'RIGHT_LEG';
+
+export interface HitLocationEntry {
+  part: BodyPart;
+  weight: number;          // d100 权重 (1-100 归一化)
+  damageCap?: number;      // 单次伤害上限
+  critMultiplier?: number; // 部位专属暴击倍率（覆盖默认值）
+}
+
+export interface HitResult {
+  part: BodyPart;
+  isCrit: boolean;
+  critMultiplier: number;
+  rawDamage: number;       // 暴击加成后的原始伤害
+  cappedDamage: number;    // 经过部位上限截断后的最终伤害
+  overflowDamage: number;  // 溢出伤害（浪费）
+  partDestroyed: boolean;  // 部位是否已破坏（打空）
+}
+
+export interface CritConfig {
+  range: number;              // d20 暴击阈值 (>= range 即暴击)
+  defaultMultiplier: number;  // 默认暴击倍率
+}
+
+export interface BodyPartState {
+  currentHp: number;
+  maxHp: number;
+  destroyed: boolean;
+}
+
 // RulePack data-driven rule definitions
 export interface RulePackDefs {
   id: string;
@@ -106,6 +139,7 @@ export interface Entity {
     };
     resources: ResourcePool;
     activeEffects: AppliedEffect[];
+    bodyParts?: Record<string, BodyPartState>;  // 部位破坏状态（仅要害优先路线使用）
     
     // 状态机上下文：记录当前正在执行的长前摇动作或移动
     currentActionContext?: {

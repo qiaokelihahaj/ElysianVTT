@@ -22,27 +22,27 @@ Legend: [ ] 待开始  [/] 进行中  [x] 已完成
 
 **目标**：让规则引擎具有运行伊利塞昂规则"最小可用战斗"的能力。
 
-### 1.1 双轨资源系统补齐 [ ]
+### 1.1 双轨资源系统补齐 [x]
 
-- [ ] 在 `ResourcePool` 类型中明确 PP(韧性) 和 FP(专注) 的语义
-- [ ] 种子数据中为所有角色添加 `poise` 和 `focus` 属性（含当前值/最大值）
-- [ ] 在 `handleActionIntent` 中解析 `ActionTemplate.resourceCost` 并执行扣除
-- [ ] 在 `resolveActionPulse` 中添加持续资源消耗（Channeling 时的每脉冲消耗）
-- [ ] 修改 `checkSustainAfterMutations`：打断条件 `<= 0` → `< 0`（=0 时保留惯性）
-- [ ] 测试：资源消耗正确性、归零不打断场景、双资源耗尽场景
+- [x] 在 `ResourcePool` 类型中明确 PP(韧性) 和 FP(专注) 的语义
+- [x] 种子数据中为所有角色添加 `poise` 和 `focus` 属性（含当前值/最大值）
+- [x] 在 `handleActionIntent` 中解析 `ActionTemplate.resourceCost` 并执行扣除
+- [x] 在 `resolveActionPulse` 中添加持续资源消耗（Channeling 时的每脉冲消耗）
+- [x] 修改 `checkSustainAfterMutations`：打断条件 `<= 0` → `< 0`（=0 时保留惯性）
+- [x] 测试：资源消耗正确性、归零不打断场景、双资源耗尽场景
 
 **关键文件**：`shared/src/index.ts`, `CombatEngine.ts`, `EffectSystem.ts`, `seed.ts`
 **验收条件**：角色释放动作时正确扣除 PP/FP，=0 不打断，<0 才打断
 
-### 1.2 动作五阶段状态机扩展 [ ]
+### 1.2 动作五阶段状态机扩展 [x]
 
-- [ ] 在 `ActionExecutionEvent.phase` 和 `currentActionContext.phase` 中加入 `DELAY`
-- [ ] 修改 `EventFactory.createActionPhaseEvent` 按 DELAY→STARTUP→ACTIVE→RECOVERY 顺序生成
-- [ ] 在 `CombatEngine` 中独立处理 `DELAY` 阶段（可 Cancel 窗口）
-- [ ] 在 `CombatEngine` 中独立生成并处理 `ACTIVE` 阶段（绝对不可逆）
-- [ ] 打断后跳转到 Recovery 而非直接回 Idle
-- [ ] 修改前端 `gameStore.ts` 和 UI 模式支持五阶段展示
-- [ ] 测试：五阶段完整生命周期、ACTIVE 不可逆、打断回 Recovery
+- [x] 在 `ActionExecutionEvent.phase` 和 `currentActionContext.phase` 中加入 `DELAY`
+- [x] 修改 `EventFactory.createActionPhaseEvent` 按 DELAY→STARTUP→ACTIVE→RECOVERY 顺序生成
+- [x] 在 `CombatEngine` 中独立处理 `DELAY` 阶段（可 Cancel 窗口）
+- [x] 在 `CombatEngine` 中独立生成并处理 `ACTIVE` 阶段（绝对不可逆）
+- [x] 打断后跳转到 Recovery 而非直接回 Idle
+- [x] 修改前端 `gameStore.ts` 和 UI 模式支持五阶段展示
+- [x] 测试：五阶段完整生命周期、ACTIVE 不可逆、打断回 Recovery
 
 **关键文件**：`shared/src/index.ts`, `CombatEngine.ts`, `EventFactory.ts`, `gameStore.ts`
 **验收条件**：动作按 Delay→Startup→Active→Recovery 完整流转，Active 阶段不可打断
@@ -58,33 +58,33 @@ Legend: [ ] 待开始  [/] 进行中  [x] 已完成
 **关键文件**：`schema.prisma`, `Dictionary.ts`, `RulePackLoader.ts`(new), `RuleEvaluator.ts`
 **验收条件**：可通过切换 rulePackId 加载不同的动作模板集和属性定义
 
-### 1.4 打断与假动作机制 [ ]
+### 1.4 打断与假动作机制 [x]
 
-- [ ] 在 `ClientIntent` 中加入 `CANCEL_ACTION` / `FEINT` 类型
-- [ ] 在 `IntentRouter` 中添加取消意图的验证和路由
-- [ ] 实现 `playerCancelAction` — 消耗 PP/FP 强制回到 Idle
-- [ ] 延迟态取消代价低，发生态取消代价高
-- [ ] 测试：取消动作品消耗正确、延迟态 vs 发生态代价差异
+- [x] 在 `ClientIntent` 中加入 `CANCEL_ACTION` / `FEINT` 类型
+- [x] 在 `IntentRouter` 中添加取消意图的验证和路由
+- [x] 实现 `playerCancelAction` — 消耗 PP/FP 强制回到 Idle
+- [x] 延迟态取消代价低，发生态取消代价高
+- [x] 测试：取消动作品消耗正确、延迟态 vs 发生态代价差异
 
 **关键文件**：`shared/src/index.ts`, `IntentRouter.ts`, `CombatEngine.ts`
 **验收条件**：玩家可通过发送 CANCEL_ACTION 消耗资源取消当前动作
 
-### 1.5 空间网格基础 [ ]
+### 1.5 空间网格基础 [x]
 
-- [ ] 在类型系统中加入六边形网格坐标 `HexCoord { q: number; r: number }`
-- [ ] 添加 `hexDistance(a, b)` 和 `hexNeighbors(coord)` 工具函数（参考 PlanarAlly / Red Blob Games 算法）
-- [ ] 支持坐标转换：`Vector3D` ↔ `HexCoord`（暂保留连续坐标兼容）
-- [ ] 测试：六边形距离计算、邻居查找
+- [x] 在类型系统中加入六边形网格坐标 `HexCoord { q: number; r: number }`
+- [x] 添加 `hexDistance(a, b)` 和 `hexNeighbors(coord)` 工具函数（参考 PlanarAlly / Red Blob Games 算法）
+- [x] 支持坐标转换：`Vector3D` ↔ `HexCoord`（暂保留连续坐标兼容）
+- [x] 测试：六边形距离计算、邻居查找
 
 **关键文件**：`shared/src/index.ts`, `SpatialSystem.ts`, `VectorMath.ts`
 **验收条件**：后端可计算六边形网格距离和邻近格子
 
-### 1.6 空文件填充 [ ]
+### 1.6 空文件填充 [x]
 
-- [ ] `Actor.ts` — 角色实体类（关联 RulePack、资源管理、状态机）
-- [ ] `BaseEntity.ts` — 基础实体抽象类（坐标、朝向、标签、持有规则包 ID）
-- [ ] `CombatSystem.ts` — 集成战斗控制器（协调 CombatEngine + EffectSystem）
-- [ ] `Projectile.ts` — 弹道实体类（轨迹、速度、碰撞回调）
+- [x] `Actor.ts` — 角色实体类（关联 RulePack、资源管理、状态机）
+- [x] `BaseEntity.ts` — 基础实体抽象类（坐标、朝向、标签、持有规则包 ID）
+- [x] `CombatSystem.ts` — 集成战斗控制器（协调 CombatEngine + EffectSystem）
+- [x] `Projectile.ts` — 弹道实体类（轨迹、速度、碰撞回调）
 
 **关键文件**：上述 4 个 0 行文件
 **验收条件**：TypeScript 编译通过
@@ -151,14 +151,14 @@ Legend: [ ] 待开始  [/] 进行中  [x] 已完成
 
 **目标**：完成伊利塞昂规则的全部战斗机制。
 
-### 3.1 部位破坏与重击系统 [ ]
+### 3.1 部位破坏与重击系统 [x]
 
-- [ ] 在类型中加入 `BodyPart`, `DamageCap`, `HitLocation` 定义
-- [ ] 实现部位判定骰（d100/d20 部位随机表，由 RulePack 定义）
-- [ ] 实现"要害优先"路线：高重击倍率 + 部位上限截断 + 已破坏=打空
-- [ ] 实现"损伤优先"路线：无部位判定 + 全额伤害 + 无上限截断
-- [ ] 残废 Debuff 系统（部位被破坏后附加的惩罚效果）
-- [ ] 测试：要害/损伤两条路线、伤害截断计算、残废效果
+- [x] 在类型中加入 `BodyPart`, `DamageCap`, `HitLocation` 定义
+- [x] 实现部位判定骰（d100/d20 部位随机表，由 RulePack 定义）
+- [x] 实现"要害优先"路线：高重击倍率 + 部位上限截断 + 已破坏=打空
+- [x] 实现"损伤优先"路线：无部位判定 + 全额伤害 + 无上限截断
+- [x] 残废 Debuff 系统（部位被破坏后附加的惩罚效果）
+- [x] 测试：要害/损伤两条路线、伤害截断计算、残废效果
 
 ### 3.2 实体弹道系统 [ ]
 
@@ -402,6 +402,7 @@ Phase 6 ────────────────────────
 [✓] Phase 2.4 主动闪避系统 (Dodge)   [  已完成   ]
 [✓] Phase 2.5 Reaction 反应动作系统   [  已完成   ]
 [✓] Phase 2.6 微避系统 (Micro-Evasion) [已完成 ]
+[✓] Phase 3.1 部位破坏与重击系统     [  已完成   ]
 ```
 
 > **当前状态**: Phase 1 全部完成！Phase 2 (战斗核心博弈) 全部完成！

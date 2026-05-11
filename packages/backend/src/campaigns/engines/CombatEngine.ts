@@ -138,6 +138,10 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
     public mountEntities(entities: Entity[]): void {
         for (const entity of entities) {
             this.entities.set(entity.id, entity);
+            // 初始化部位状态（ACTOR 类型且无预设部位时使用默认值）
+            if (entity.type === 'ACTOR' && !entity.bodyParts) {
+                entity.bodyParts = this.createDefaultBodyParts(entity);
+            }
         }
     }
 
@@ -151,6 +155,18 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             }
         }
         return removed;
+    }
+
+    /** 为实体创建默认部位状态 */
+    private createDefaultBodyParts(_entity: Entity): Record<string, { currentHp: number; maxHp: number; destroyed: boolean }> {
+        return {
+            HEAD:       { currentHp: 30, maxHp: 30, destroyed: false },
+            TORSO:      { currentHp: 100, maxHp: 100, destroyed: false },
+            LEFT_ARM:   { currentHp: 30, maxHp: 30, destroyed: false },
+            RIGHT_ARM:  { currentHp: 30, maxHp: 30, destroyed: false },
+            LEFT_LEG:   { currentHp: 35, maxHp: 35, destroyed: false },
+            RIGHT_LEG:  { currentHp: 35, maxHp: 35, destroyed: false },
+        };
     }
 
     private _batchMode = false;
