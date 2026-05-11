@@ -1,7 +1,9 @@
 // packages/backend/src/core/systems/EffectSystem.ts
-import { Entity, ActionTemplate, ActionEffectPayload, DiceRule, LogVisibility, HitLocationEntry, CritConfig } from '@hard-vtt/shared';
+import { Entity, ActionTemplate, ActionEffectPayload, DiceRule, LogVisibility, HitLocationEntry, CritConfig, AoeConfig, DamageFalloffConfig } from '@hard-vtt/shared';
 import { RuleEvaluator } from './RuleEvaluator.js';
 import { BodyPartResolver } from './BodyPartResolver.js';
+import { AoeResolver } from './AoeResolver.js';
+import { VectorMath } from '../../utils/VectorMath.js';
 import { Logger } from '../../utils/Logger.js';
 
 const logger = Logger.create('System:Effect');
@@ -13,11 +15,12 @@ export class EffectSystem {
      * @param onInterrupt - 可选回调，当效果类型为 INTERRUPT 时触发，用于取消目标当前动作
      */
     public static applyAction(
-        template: ActionTemplate, 
-        actor: Entity, 
+        template: ActionTemplate,
+        actor: Entity,
         targets: Entity[],
-        engineCtx?: { tick?: number; sceneId?: string },
-        onInterrupt?: (target: Entity) => void
+        engineCtx?: { tick?: number; sceneId?: string; entities?: Map<string, Entity> },
+        onInterrupt?: (target: Entity) => void,
+        coverDrMap?: Map<string, number>  // Phase 3.3: targetId → 掩体 DR
     ): Map<string, Record<string, any>> {
         const mutations = new Map<string, Record<string, any>>();
 
@@ -32,10 +35,12 @@ export class EffectSystem {
                 resolvedTargets = [actor];
             } else if (effect.targetSelector === 'PRIMARY') {
                 resolvedTargets = targets;
+            } else if (effect.targetSelector === 'ALL_IN_AOE') {
+                resolvedTargets = this.resolveAoeTargets(effect, actor, targets, engineCtx);
             }
 
             for (const target of resolvedTargets) {
-                this.executeEffect(effect, actor, target, template, engineCtx, recordChange, onInterrupt);
+                this.executeEffect(effect, actor, target, template, engineCtx, recordChange, onInterrupt, coverDrMap);
             }
         }
 
@@ -43,13 +48,14 @@ export class EffectSystem {
     }
 
     private static executeEffect(
-        effect: ActionEffectPayload, 
-        actor: Entity, 
+        effect: ActionEffectPayload,
+        actor: Entity,
         target: Entity,
         template: ActionTemplate,
         engineCtx: { tick?: number; sceneId?: string } | undefined,
         recordChange: (id: string, path: string, value: any) => void,
-        onInterrupt?: (target: Entity) => void
+        onInterrupt?: (target: Entity) => void,
+        coverDrMap?: Map<string, number>
     ) {
         // INTERRUPT 效果特殊处理：不需要表达式求值，直接取消目标当前动作
         if (effect.type === 'INTERRUPT') {
@@ -149,6 +155,14 @@ export class EffectSystem {
                         LogVisibility.PLAYER, engineCtx
                     );
                 }
+
+                // ── AOE 衰减与爆风阴影 (Phase 3.6) ──
+                if (effect.targetSelector === 'ALL_IN_AOE') {
+                    effectiveAmount = EffectSystem.applyAoeModifiers(
+                        effectiveAmount, effect, actor, target, engineCtx
+                    );
+                }
+
                 const ignoreDr = effect.parameters.ignoreDr === true;
                 if (!ignoreDr) {
                     const dr = target.resources.current.armor ?? target.resources.current.dr ?? 0;
@@ -157,6 +171,17 @@ export class EffectSystem {
                         effectiveAmount = Math.max(0, effectiveAmount - dr);
                         if (effectiveAmount !== beforeDR) {
                             logger.game(`🛡️ [DR] ${target.id} 的护甲减免了 ${beforeDR - effectiveAmount} 点伤害 (DR=${dr})`, null, LogVisibility.PLAYER, engineCtx);
+                        }
+                    }
+                }
+                // Phase 3.3: 应用掩体 DR（在护甲 DR 后、最终结算前）
+                if (coverDrMap && coverDrMap.has(target.id)) {
+                    const coverDr = coverDrMap.get(target.id)!;
+                    if (coverDr > 0) {
+                        const beforeCover = effectiveAmount;
+                        effectiveAmount = Math.max(0, effectiveAmount - coverDr);
+                        if (effectiveAmount !== beforeCover) {
+                            logger.game(`🧱 [Cover DR] ${target.id} 的掩体减免了 ${beforeCover - effectiveAmount} 点伤害 (Cover DR=${coverDr})`, null, LogVisibility.PLAYER, engineCtx);
                         }
                     }
                 }
@@ -201,5 +226,118 @@ export class EffectSystem {
             default:
                 logger.warn(`未知的效果类型: ${effect.type}`, null, engineCtx);
         }
+    }
+
+    // ==========================================================
+    //  AOE 目标解析与伤害修正 (Phase 3.6)
+    // ==========================================================
+
+    /**
+     * 解析 ALL_IN_AOE 目标列表
+     * 使用 engineCtx 中的 entities 地图查找所有在 AOE 范围内的实体
+     */
+    private static resolveAoeTargets(
+        effect: ActionEffectPayload,
+        actor: Entity,
+        _primaryTargets: Entity[],
+        engineCtx?: { tick?: number; sceneId?: string; entities?: Map<string, Entity> }
+    ): Entity[] {
+        if (!engineCtx?.entities) {
+            logger.warn('ALL_IN_AOE 需要 entities 上下文，返回空列表', null, engineCtx);
+            return [];
+        }
+
+        const allEntities = Array.from(engineCtx.entities.values());
+        const aoeShape = effect.parameters.aoeShape as string;
+        const aoeRadius = effect.parameters.aoeRadius as number;
+
+        if (!aoeShape || !aoeRadius) {
+            logger.warn('ALL_IN_AOE 缺少 aoeShape/aoeRadius 参数', null, engineCtx);
+            return [];
+        }
+
+        const origin = { ...actor.transform.coords };
+        const config: AoeConfig = {
+            shape: aoeShape as any,
+            origin,
+            facing: actor.transform.facing,
+            radius: aoeRadius,
+            angle: (effect.parameters.aoeAngle as number) ?? 90,
+            width: (effect.parameters.aoeWidth as number) ?? 1
+        };
+
+        const inArea = AoeResolver.resolveTargets(allEntities, config)
+            .filter(e => e.id !== actor.id); // 排除施法者自身
+
+        // 过滤掉带有 AOE_IMMUNE 标签的实体
+        return inArea.filter(e => AoeResolver.isFriendlyFireAffected(e, ''));
+    }
+
+    /**
+     * 对 AOE 伤害应用衰减和爆风阴影修正
+     * 在 executeEffect DAMAGE 分支中调用
+     */
+    public static applyAoeModifiers(
+        effectiveAmount: number,
+        effect: ActionEffectPayload,
+        actor: Entity,
+        target: Entity,
+        engineCtx?: { tick?: number; sceneId?: string; entities?: Map<string, Entity> }
+    ): number {
+        if (effect.targetSelector !== 'ALL_IN_AOE') return effectiveAmount;
+
+        let modified = effectiveAmount;
+        const origin = { ...actor.transform.coords };
+        const dist = VectorMath.distance(origin, target.transform.coords);
+
+        // 1. 范围衰减
+        const ffRadius = effect.parameters.falloffFullRadius as number | undefined;
+        const feRadius = effect.parameters.falloffEndRadius as number | undefined;
+        const minPct = effect.parameters.falloffMinPercent as number | undefined;
+
+        if (ffRadius !== undefined && feRadius !== undefined && minPct !== undefined) {
+            const falloffConfig: DamageFalloffConfig = {
+                fullDamageRadius: ffRadius,
+                falloffStart: feRadius,
+                minDamagePercent: minPct
+            };
+            // applyFalloffDamage 不包括 DR（DR 在 executeEffect 中统一处理）
+            const percent = AoeResolver.calculateFalloff(dist, falloffConfig);
+            modified = Math.floor(effectiveAmount * percent);
+        }
+
+        // 2. 爆风阴影
+        const covers = this.findBlastCovers(engineCtx, origin, target);
+        if (covers.length > 0) {
+            const shadow = AoeResolver.isInBlastShadow(origin, target, covers);
+            if (shadow.inShadow) {
+                modified = Math.floor(modified * 0.3);
+                logger.game(
+                    `🌫️ [BlastShadow] ${target.id} 被掩体遮挡，伤害降为 ${modified}`,
+                    null, LogVisibility.PLAYER, engineCtx
+                );
+            }
+        }
+
+        return modified;
+    }
+
+    /**
+     * 查找爆炸中心与目标之间的掩体（PROP 类型实体）
+     */
+    private static findBlastCovers(
+        engineCtx: { tick?: number; sceneId?: string; entities?: Map<string, Entity> } | undefined,
+        blastCenter: { x: number; y: number; z: number },
+        target: Entity
+    ): Entity[] {
+        if (!engineCtx?.entities) return [];
+        const covers: Entity[] = [];
+        const targetDist = VectorMath.distance(blastCenter, target.transform.coords);
+        for (const [, ent] of engineCtx.entities) {
+            if (ent.type !== 'PROP') continue;
+            const coverDist = VectorMath.distance(blastCenter, ent.transform.coords);
+            if (coverDist < targetDist) covers.push(ent);
+        }
+        return covers;
     }
 }

@@ -14,6 +14,26 @@ export interface HexCoord {
     r: number;
 }
 
+// ==========================================
+// 1b. AOE 与爆炸结算类型 (Phase 3.6)
+// ==========================================
+export type AoeShape = 'CIRCULAR' | 'CONICAL' | 'LINEAR';
+
+export interface AoeConfig {
+  origin: Vector3D;      // 爆炸中心坐标
+  facing: number;        // 朝向（锥形/线形需要）
+  shape: AoeShape;
+  radius: number;        // 圆形半径 / 锥形长度 / 线形长度
+  angle?: number;        // 锥形张开角度（默认 90°）
+  width?: number;        // 线形宽度（默认 1）
+}
+
+export interface DamageFalloffConfig {
+  fullDamageRadius: number;    // 全额伤害范围
+  falloffStart: number;        // 开始衰减的距离
+  minDamagePercent: number;    // 最低伤害百分比 (0-1)
+}
+
 export interface Transform {
     coords: Vector3D;
     planeId: PlaneId;       
@@ -66,6 +86,40 @@ export interface BodyPartState {
   currentHp: number;
   maxHp: number;
   destroyed: boolean;
+}
+
+// ==========================================
+// 2b. 掩体系统与战术姿态 (Cover & Stance)
+// ==========================================
+export type CoverType = 'NONE' | 'HALF' | 'FULL';
+
+export interface CoverDef {
+  id: string;
+  coverType: CoverType;
+  coverDr: number;              // 掩体提供的 DR
+  coverThreshold: number;       // d20 命中掩体阈值
+  height: number;               // 掩体 Z 高度
+  maxHp?: number;               // 掩体耐久（可破坏）
+  blastShadowRadius?: number;   // 爆风阴影半径
+}
+
+export interface CoverState {
+  coverDefId: string;
+  coverType: CoverType;
+  coverDr: number;
+  coverThreshold: number;
+  facing: number;               // 掩体朝向（保护方向）
+  height: number;
+}
+
+export type TacticalStance = 'ADS' | 'BLIND_FIRE' | 'NONE';
+
+export interface StanceConfig {
+  stance: TacticalStance;
+  accuracyModifier: number;     // ADS: +2, BLIND_FIRE: -4
+  exposedBodyParts: BodyPart[]; // ADS: [HEAD, LEFT_ARM, RIGHT_ARM]
+  shotDeviation: number;        // 弹着点偏移半径
+  switchCostTicks: number;      // 切换姿态消耗的 Tick
 }
 
 // RulePack data-driven rule definitions
@@ -139,8 +193,11 @@ export interface Entity {
     };
     resources: ResourcePool;
     activeEffects: AppliedEffect[];
+    tags?: string[];                          // Phase 3.6: 标签（FACTION_A, AOE_IMMUNE 等）
     bodyParts?: Record<string, BodyPartState>;  // 部位破坏状态（仅要害优先路线使用）
-    
+    coverState?: CoverState;                    // Phase 3.3: 掩体状态
+    currentStance?: TacticalStance;             // Phase 3.3: 战术姿态
+
     // 状态机上下文：记录当前正在执行的长前摇动作或移动
     currentActionContext?: {
         type: 'CASTING' | 'MOVING';
@@ -332,7 +389,8 @@ export interface ClientIntent {
     actorId: EntityId;
     intentType: 'CAST_ACTION' | 'MOVE' | 'INTERACT' | 'CANCEL_ACTION' | 'BATCH_CAST'
         | 'DEFEND' | 'DODGE' | 'REACTION' | 'MICRO_EVADE'
-        | 'PRIORITY_TOGGLE' | 'GAMBIT_PRESET' | 'HOOK_PRESET';
+        | 'PRIORITY_TOGGLE' | 'GAMBIT_PRESET' | 'HOOK_PRESET'
+        | 'CHANGE_STANCE';
     clientTick: Tick;
     payload: {
         actionTemplateId?: string;
@@ -346,6 +404,7 @@ export interface ClientIntent {
         toggleMode?: PlayerPriorityToggle;
         hookPreset?: HookPreset;
         gambitPreset?: { actionTemplateId: string; condition: HookTrigger };
+        stance?: TacticalStance;      // CHANGE_STANCE 时指定目标姿态
     };
 }
 
