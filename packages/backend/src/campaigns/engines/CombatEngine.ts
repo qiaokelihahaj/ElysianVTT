@@ -3,7 +3,7 @@ import { EventEmitter } from 'events';
 import {
     IEngineInstance, Tick, ClientIntent, Entity, EntityId, Vector3D, ActionTemplate,
     TickEvent, ActionExecutionEvent, MovementStepEvent, StateMutationPayload,
-    ActionScheduledPayload, DecisionPollPayload, DecisionResponsePayload, DecisionOption,
+    ActionScheduledPayload, ActionTimelinePatch, DecisionPollPayload, DecisionResponsePayload, DecisionOption,
     PlayerPriorityToggle, HookPreset, HookTrigger, LogVisibility, UnifiedHook
 } from '@hard-vtt/shared';
 import { PriorityQueue } from '../../core/engine/PriorityQueue.js';
@@ -44,7 +44,7 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
     private obstacles: Vector3D[] = [];
     private combatEnded = false;
     
-    private pendingMutations: StateMutationPayload = { tick: 0, mutations: [] };
+    private pendingMutations: StateMutationPayload = { tick: 0, mutations: [], actionPatches: [] };
     /** 等待决策的窗口数量，> 0 时暂停 processQueue */
     private pendingDecisionCount = 0;
     /** generateSystemHooks 是否在本 tick 发出了 DECISION_POLL（需要等决策） */
@@ -337,7 +337,9 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             waypoints,
             currentWaypointIndex: 0,
             consecutiveMoves: newConsecutiveMoves,
-            lastMoveTick: this.currentTick
+            lastMoveTick: this.currentTick,
+            pulseTickHistory: [],
+            timelineStart: ct
         };
 
         this.logger.game(
@@ -346,13 +348,19 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             LogVisibility.PLAYER, this.logCtx()
         );
 
-        // 广播时间轴数据
+        // 广播时间轴数据 — 预计算冲刺加速后的动态间隔，与 resolveMovementPulse 保持一致
         const moveActiveTicks: number[] = [];
-        let moveTick = evt.targetTick;
+        let cumulativeTick = evt.targetTick;
+        let sprintCount = newConsecutiveMoves;
         for (let i = 0; i < waypoints.length; i++) {
-            moveActiveTicks.push(moveTick + i * moveInterval);
+            moveActiveTicks.push(cumulativeTick);
+            if (i < waypoints.length - 1) {
+                const nextInterval = SpatialSystem.sprintTickCost(sprintCount, MOVE_INTERVAL_TICKS, 0.1, 0.5, 1);
+                cumulativeTick += nextInterval;
+                sprintCount++;
+            }
         }
-        const moveEndTick = evt.targetTick + (waypoints.length - 1) * MOVE_INTERVAL_TICKS + 1 + MOVE_RECOVERY_TICKS;
+        const moveEndTick = moveActiveTicks[moveActiveTicks.length - 1] + 1 + MOVE_RECOVERY_TICKS;
         const movePayload: ActionScheduledPayload = {
             entityId: actor.id,
             actionId: '__BUILTIN_MOVE__',
@@ -423,7 +431,9 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             actionTemplateId: template.id,
             phase: 'STARTUP',
             resolveTick: evt.targetTick,
-            pulseCount: 0
+            pulseCount: 0,
+            pulseTickHistory: [],
+            timelineStart: ct
         };
 
         // 广播 ACTION_SCHEDULED
@@ -1189,7 +1199,7 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
 
         while (!this.tickLoop.isEmpty()) {
             // 广播上一轮的 accumulation
-            if (this.pendingMutations.mutations.length > 0) {
+            if (this.pendingMutations.mutations.length > 0 || (this.pendingMutations.actionPatches?.length ?? 0) > 0) {
                 this.broadcastMutations();
             }
 
@@ -1227,7 +1237,7 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             this.systemDecisionPending = false;
 
             if (shouldPause) {
-                if (this.pendingMutations.mutations.length > 0) {
+                if (this.pendingMutations.mutations.length > 0 || (this.pendingMutations.actionPatches?.length ?? 0) > 0) {
                     this.broadcastMutations();
                 }
                 break;
@@ -1377,6 +1387,10 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
 
         ctx.pulseCount = (ctx.pulseCount ?? 0) + 1;
 
+        //  记录实际脉冲 tick（增量时间轴修正）
+        if (!ctx.pulseTickHistory) ctx.pulseTickHistory = [];
+        ctx.pulseTickHistory.push(this.currentTick);
+
         // Phase 3.4: 更新冲刺状态
         ctx.lastMoveTick = this.currentTick;
         ctx.consecutiveMoves = (ctx.consecutiveMoves ?? 0) + 1;
@@ -1399,6 +1413,8 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
                 `✅ [Move] Tick ${this.currentTick}: ${actor.id} 到达目的地，进入收招`,
                 null, LogVisibility.PLAYER, this.logCtx()
             );
+            // 标记所有航点已完成，确保 emitTimelineUpdate 的 remaining=0
+            ctx.currentWaypointIndex = waypoints.length;
             const recoveryEvt: ActionExecutionEvent = {
                 ...actEvent,
                 eventId: generateId(),
@@ -1415,6 +1431,9 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
             };
             this.recordMutation(actor.id, { 'currentActionContext': actor.currentActionContext });
         }
+
+        // 增量时间轴修正：推送实际脉冲 + 预计算剩余
+        this.emitTimelineUpdate(actor, '__BUILTIN_MOVE__', 'Move');
     }
 
     private resolveActionPulse(actor: Entity, actEvent: ActionExecutionEvent): void {
@@ -1697,6 +1716,11 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
         }
 
         ctx.pulseCount = pulseNum;
+
+        // 记录实际脉冲 tick（增量时间轴修正）
+        if (!ctx.pulseTickHistory) ctx.pulseTickHistory = [];
+        ctx.pulseTickHistory.push(this.currentTick);
+
         this.checkSustainAfterMutations([...affectedIds, actor.id]);
 
         // === 系统钩子: 为有效反应者注册系统钩子 ===
@@ -1726,9 +1750,83 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
                 `⏳ [Channel] Tick ${this.currentTick}: ${actor.id} 引导等待 (pulse ${pulseNum}/${channel.maxPulses ?? '∞'})`,
                 null, LogVisibility.PLAYER, this.logCtx()
             );
+            // 增量时间轴修正
+            this.emitTimelineUpdate(actor, template.id, template.id);
         } else {
             this.pushRecovery(actor, actEvent, template);
+            // 增量时间轴修正
+            this.emitTimelineUpdate(actor, template.id, template.id);
         }
+    }
+
+    /**
+     * 增量时间轴修正 — 在每个脉冲结算后，用实际 tick + 预计算剩余脉冲
+     * 累积到 pendingMutations.actionPatches，随 STATE_MUTATED 统一广播
+     */
+    private emitTimelineUpdate(actor: Entity, actionId: string, actionName: string): void {
+        const ctx = actor.currentActionContext;
+        if (!ctx) return;
+
+        const actualPulses = ctx.pulseTickHistory ?? [];
+        if (actualPulses.length === 0) return;
+
+        let projectedPulses: number[] = [];
+        let recoveryTicks: number;
+
+        if (ctx.type === 'MOVING' && ctx.waypoints) {
+            const remaining = ctx.waypoints.length - (ctx.currentWaypointIndex ?? 0);
+            let cumulativeTick = this.currentTick;
+            let sprintCount = ctx.consecutiveMoves ?? 0;
+
+            for (let i = 0; i < remaining; i++) {
+                const interval = SpatialSystem.sprintTickCost(
+                    sprintCount, MOVE_INTERVAL_TICKS, 0.1, 0.5, 1
+                );
+                cumulativeTick += interval;
+                projectedPulses.push(cumulativeTick);
+                sprintCount++;
+            }
+            recoveryTicks = MOVE_RECOVERY_TICKS;
+        } else if (ctx.type === 'CASTING') {
+            const template = Dictionary.getAction(ctx.actionTemplateId!);
+            if (!template) return;
+
+            const channel = template.channelOptions;
+            const pulseNum = ctx.pulseCount ?? 0;
+
+            if (channel && (!channel.maxPulses || pulseNum < channel.maxPulses)) {
+                const remaining = (channel.maxPulses ?? 1) - pulseNum;
+                let cumulativeTick = this.currentTick;
+                for (let i = 0; i < remaining; i++) {
+                    cumulativeTick += channel.intervalTicks;
+                    projectedPulses.push(cumulativeTick);
+                }
+            }
+            recoveryTicks = template.timeCost.recoveryTicks;
+        } else {
+            return;
+        }
+
+        const allPulseTicks = [...actualPulses, ...projectedPulses];
+        const lastPulse = allPulseTicks[allPulseTicks.length - 1];
+
+        const patch: ActionTimelinePatch = {
+            entityId: actor.id,
+            actionId,
+            actionName,
+            timeline: {
+                start: ctx.timelineStart ?? actualPulses[0],
+                startupEnd: actualPulses[0],
+                recoveryStart: lastPulse + 1,
+                end: lastPulse + 1 + recoveryTicks,
+                pulseTicks: allPulseTicks
+            }
+        };
+
+        if (!this.pendingMutations.actionPatches) {
+            this.pendingMutations.actionPatches = [];
+        }
+        this.pendingMutations.actionPatches.push(patch);
     }
 
     private pushNextPulse(actor: Entity, prevEvent: ActionExecutionEvent, intervalTicks: number): void {
@@ -2011,9 +2109,11 @@ export class CombatEngine extends EventEmitter implements IEngineInstance {
     }
 
     private broadcastMutations() {
-        if (this.pendingMutations.mutations.length > 0) {
+        const hasMutations = this.pendingMutations.mutations.length > 0;
+        const hasPatches = (this.pendingMutations.actionPatches?.length ?? 0) > 0;
+        if (hasMutations || hasPatches) {
             this.emit('STATE_MUTATED', this.pendingMutations);
-            this.pendingMutations = { tick: this.currentTick, mutations: [] };
+            this.pendingMutations = { tick: this.currentTick, mutations: [], actionPatches: [] };
         }
     }
 

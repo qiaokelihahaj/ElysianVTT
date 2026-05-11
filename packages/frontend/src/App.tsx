@@ -188,16 +188,11 @@ function App() {
             }
         };
 
-        const handleDecisionAllResolved = (payload: any) => {
-            const store = useGameStore.getState();
+        const handleDecisionAllResolved = () => {
             // 防御：多标签页场景下，用户已接战时（按过空格），
             // 不应因其他标签页的自动跳过而清除决策窗口
-            if (store.tactical.reactionTriggered) {
-                console.log('[App] DECISION_ALL_RESOLVED ignored: user is engaged, payload:', payload);
-                return;
-            }
-            console.log('[App] DECISION_ALL_RESOLVED: clearing window, payload:', payload);
-            store.clearActiveWindow();
+            if (useGameStore.getState().tactical.reactionTriggered) return;
+            useGameStore.getState().clearActiveWindow();
         };
 
         socketClient.onStateMutated(handleMutation);

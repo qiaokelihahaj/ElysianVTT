@@ -276,6 +276,8 @@ export interface Entity {
         currentWaypointIndex?: number;                 // MOVING 时当前已到达的航点索引
         consecutiveMoves?: number;                     // Phase 3.4: 冲刺连击计数
         lastMoveTick?: number;                         // Phase 3.4: 上次移动 Tick
+        pulseTickHistory?: number[];                   // Phase 5.1: 已执行脉冲的实际 Tick（增量时间轴修正）
+        timelineStart?: number;                        // Phase 5.1: 动作开始 Tick（用于时间轴更新）
     };
 }
 
@@ -481,6 +483,22 @@ export interface StateMutationPayload {
         entityId: EntityId;
         changes: Record<string, any>; // 扁平化状态差分，例 {"resources.current.hp": 10}
     }>;
+    /** 动作时间轴增量修正 — 每个脉冲结算后累积，随 STATE_MUTATED 统一广播 */
+    actionPatches?: ActionTimelinePatch[];
+}
+
+/** 动作时间轴增量补丁 — 前端按 entityId 替换对应动作的 timeline */
+export interface ActionTimelinePatch {
+    entityId: EntityId;
+    actionId: string;
+    actionName: string;
+    timeline: {
+        start: Tick;
+        startupEnd: Tick;
+        recoveryStart: Tick;
+        end: Tick;
+        pulseTicks: number[];
+    };
 }
 
 export interface VisualEventPayload {
@@ -510,6 +528,7 @@ export interface ActionScheduledPayload {
     };
     tags?: string[];
 }
+
 
 // ==========================================
 // 6. 决策窗口系统 (Decision Window)

@@ -135,8 +135,6 @@ export const useGameStore = create<GameState>()(
 
         applyStateMutation: (payload: StateMutationPayload) => set((state) => {
             state.tick = payload.tick;
-            console.log(`[Store] tick updated to ${payload.tick}, mutations: ${payload.mutations?.length ?? 0}`);
-            
             payload.mutations.forEach(mutation => {
                 const entity = state.entities[mutation.entityId];
                 if (!entity) {
@@ -148,6 +146,21 @@ export const useGameStore = create<GameState>()(
                     setNestedProperty(entity, path, value);
                 });
             });
+
+            // 处理动作时间轴增量补丁
+            if (payload.actionPatches) {
+                for (const patch of payload.actionPatches) {
+                    const idx = state.scheduledActions.findLastIndex(
+                        a => a.entityId === patch.entityId
+                    );
+                    if (idx >= 0) {
+                        state.scheduledActions[idx] = {
+                            ...state.scheduledActions[idx],
+                            timeline: patch.timeline
+                        };
+                    }
+                }
+            }
         }),
 
         addEntity: (entity) => set((state) => {
@@ -218,7 +231,6 @@ export const useGameStore = create<GameState>()(
 
             // Tactical Decision Actions
             setActiveWindow: (window) => set((state) => {
-                console.log('[STORE] setActiveWindow windowId=', window?.windowId, ', reactionTriggered=', state.tactical.reactionTriggered);
                 state.tactical.activeWindow = window;
                 if (window && typeof window.tick === 'number') {
                     state.tactical.frozenTick = window.tick;
@@ -226,7 +238,6 @@ export const useGameStore = create<GameState>()(
             }),
 
             clearActiveWindow: () => set((state) => {
-                console.log('[STORE] clearActiveWindow called', new Error().stack?.split('\n').slice(1, 4).join('\n'));
                 state.tactical.activeWindow = null;
                 state.tactical.frozenTick = null;
                 state.tactical.countdownEnd = null;
@@ -234,12 +245,10 @@ export const useGameStore = create<GameState>()(
             }),
 
             setCountdownEnd: (ms) => set((state) => {
-                console.log('[STORE] setCountdownEnd ms=', ms, ', reactionTriggered=', state.tactical.reactionTriggered);
                 state.tactical.countdownEnd = ms;
             }),
 
             triggerReaction: () => set((state) => {
-                console.log('[STORE] triggerReaction');
                 state.tactical.reactionTriggered = true;
             }),
 
@@ -249,18 +258,9 @@ export const useGameStore = create<GameState>()(
                 const currentState = useGameStore.getState();
                 const window = currentState.tactical.activeWindow;
                 const triggered = currentState.tactical.reactionTriggered;
-                const cEnd = currentState.tactical.countdownEnd;
-                const now = Date.now();
-                const rem = cEnd ? cEnd - now : 'N/A';
-                console.trace(
-                    `[DEBUG sendDecisionResponse] chosenOptionId=${chosenOptionId}, ` +
-                    `reactionTriggered=${triggered}, countdownRemaining=${rem}, ` +
-                    `hasWindow=${!!window}`
-                );
-                if (!window) {
-                    console.log('[DEBUG sendDecisionResponse] No active window, returning');
-                    return;
-                }
+
+                if (!window) return;
+
                 import('../network/socketClient').then(({ socketClient }) => {
                     socketClient.sendDecisionResponse({ windowId: window.windowId, chosenOptionId });
                 });

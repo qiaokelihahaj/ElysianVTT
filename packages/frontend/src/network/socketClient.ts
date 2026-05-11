@@ -160,8 +160,38 @@ class SocketClient {
         this.socket.off('DECISION_POLL', callback);
     }
 
+    public onHookFired(callback: (payload: { hookId: string, source: string, label: string }) => void) {
+        this.socket.on('HOOK_FIRED', callback);
+    }
+    public offHookFired(callback: (payload: { hookId: string, source: string, label: string }) => void) {
+        this.socket.off('HOOK_FIRED', callback);
+    }
+
+    public onDecisionAllResolved(callback: (payload: { windowCount?: number }) => void) {
+        this.socket.on('DECISION_ALL_RESOLVED', callback);
+    }
+    public offDecisionAllResolved(callback: (payload: { windowCount?: number }) => void) {
+        this.socket.off('DECISION_ALL_RESOLVED', callback);
+    }
+
+    public onHookSync(callback: (payload: { action: string, hook: { id: string, entityId: string, label: string, trigger: any, enabled: boolean } }) => void) {
+        this.socket.on('HOOK_SYNC', callback);
+    }
+    public offHookSync(callback: (payload: { action: string, hook: { id: string, entityId: string, label: string, trigger: any, enabled: boolean } }) => void) {
+        this.socket.off('HOOK_SYNC', callback);
+    }
+
     public sendDecisionResponse(payload: DecisionResponsePayload) {
         this.socket.emit('DECISION_RESPONSE', payload);
+    }
+
+    public sendDecisionEngage(windowId: string) {
+        this.socket.emit('DECISION_ENGAGE', { windowId });
+    }
+
+    /** GM 强制中断当前所有决策窗口，跳到下一个结算里程碑 */
+    public sendGmForceResolve() {
+        this.socket.emit('GM_FORCE_RESOLVE');
     }
 }
 
