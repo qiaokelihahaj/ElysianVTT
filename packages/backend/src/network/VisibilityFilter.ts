@@ -1,6 +1,8 @@
-import { Entity, StateMutationPayload, VisualEventPayload, type LogPayload, LogVisibility } from '@hard-vtt/shared';
+import { Entity, StateMutationPayload, VisualEventPayload, type LogPayload, LogVisibility, type HexCoord, type EntityId } from '@hard-vtt/shared';
 import type { PermissionSubject } from '../permissions/PermissionService.js';
 import { Logger } from '../utils/Logger.js';
+import type { FogOfWar } from '../core/systems/FogOfWar.js';
+import { VectorMath } from '../utils/VectorMath.js';
 
 const logger = Logger.create('Network:VisibilityFilter');
 
@@ -10,7 +12,8 @@ export class VisibilityFilter {
         payload: StateMutationPayload,
         viewer?: PermissionSubject | string
     ): StateMutationPayload | null {
-        if (!payload || !payload.mutations || payload.mutations.length === 0) return null;
+        if (!payload || !payload.mutations) return null;
+        if (payload.mutations.length === 0) return payload;
 
         // 向后兼容：支持仅传 viewerEntityId 字符串
         const viewerEntityId = typeof viewer === 'string' ? viewer : viewer?.userId;
@@ -210,5 +213,103 @@ export class VisibilityFilter {
             default:
                 return ['GM'];
         }
+    }
+
+    // ============================================================
+    //  Phase 4.2: FOV-based 可见性过滤 (Fog of War)
+    // ============================================================
+
+    /**
+     * 根据 FOV 过滤实体列表 — 仅返回观察者当前能看到的实体。
+     *
+     * 与 getVisibleEntities (基于权限) 互补：
+     * - 权限过滤决定"谁有权看到哪些实体"
+     * - FOV 过滤决定"谁实际能看到哪些实体"（视线范围内）
+     *
+     * 二者结合使用：先权限过滤，再 FOV 过滤。
+     */
+    static filterByFOV(
+        viewerId: EntityId,
+        entities: Entity[],
+        fogOfWar: FogOfWar,
+    ): Entity[] {
+        return entities.filter(target => {
+            if (target.id === viewerId) return true;
+            if (target.tags?.includes('INVISIBLE') || target.tags?.includes('HIDDEN')) return false;
+
+            const targetHex = VectorMath.vector3DToHex(target.transform.coords);
+            return fogOfWar.isHexVisibleTo(viewerId, targetHex);
+        });
+    }
+
+    /**
+     * 根据 FOV 过滤实体列表，但已探索区域的实体以灰色显示
+     * （需要前端配合渲染）
+     */
+    static filterByFOVWithExplored(
+        viewerId: EntityId,
+        entities: Entity[],
+        fogOfWar: FogOfWar,
+    ): { visible: Entity[]; explored: Entity[] } {
+        const visible: Entity[] = [];
+        const explored: Entity[] = [];
+
+        for (const target of entities) {
+            if (target.id === viewerId) {
+                visible.push(target);
+                continue;
+            }
+            if (target.tags?.includes('INVISIBLE') || target.tags?.includes('HIDDEN')) {
+                continue;
+            }
+
+            const targetHex = VectorMath.vector3DToHex(target.transform.coords);
+            if (fogOfWar.isHexVisibleTo(viewerId, targetHex)) {
+                visible.push(target);
+            } else if (fogOfWar.isHexExplored(targetHex)) {
+                explored.push(target);
+            }
+        }
+
+        return { visible, explored };
+    }
+
+    /**
+     * 检查实体是否对观察者 FOV 可见
+     */
+    static isEntityFovVisible(
+        viewerId: EntityId,
+        target: Entity,
+        fogOfWar: FogOfWar,
+    ): boolean {
+        if (target.id === viewerId) return true;
+        if (target.tags?.includes('INVISIBLE') || target.tags?.includes('HIDDEN')) return false;
+
+        const targetHex = VectorMath.vector3DToHex(target.transform.coords);
+        return fogOfWar.isHexVisibleTo(viewerId, targetHex);
+    }
+
+    /**
+     * 根据 FOV 过滤 StateMutation — 隐藏不可见实体的状态变更
+     */
+    static filterStateMutationByFOV(
+        viewerId: EntityId,
+        payload: StateMutationPayload,
+        entities: Map<EntityId, Entity>,
+        fogOfWar: FogOfWar,
+    ): StateMutationPayload | null {
+        if (!payload || !payload.mutations || payload.mutations.length === 0) return null;
+
+        const filtered = {
+            ...payload,
+            mutations: payload.mutations.filter(m => {
+                if (m.entityId === viewerId) return true;
+                const entity = entities.get(m.entityId);
+                if (!entity) return false;
+                return this.isEntityFovVisible(viewerId, entity, fogOfWar);
+            }),
+        };
+
+        return filtered.mutations.length > 0 ? filtered : null;
     }
 }

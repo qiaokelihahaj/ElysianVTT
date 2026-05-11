@@ -1,7 +1,9 @@
 import { Application, Container, Graphics, Rectangle, Sprite, Text, TextStyle } from 'pixi.js';
 import { assetManager } from '../assets';
 import { useGameStore } from '../store/gameStore';
-import type { VisualEventPayload } from '@hard-vtt/shared';
+import { entityRenderStore, EntityRenderStore } from './EntityRenderStore';
+import { useExploreStore, type HexVisibility } from '../store/exploreStore';
+import type { VisualEventPayload, TileDef } from '@hard-vtt/shared';
 
 // ============================================================
 //  Flat-top hex math — 双型偏移坐标系统
@@ -137,8 +139,22 @@ export class RendererManager {
     private readonly DISPLAY_SCALE = HEX_SIZE;
 
     private unsubscribeStore: (() => void) | null = null;
+    private unsubscribeFow: (() => void) | null = null;
 
-    private constructor() {}
+    /** 战争迷雾 Graphics（单例，clear+redraw） */
+    private fowGraphics: Graphics | null = null;
+
+    /** 实体渲染缓存（可注入，默认使用全局单例） */
+    private renderStore: EntityRenderStore;
+
+    private constructor() {
+      this.renderStore = entityRenderStore;
+    }
+
+    /** 设置自定义 renderStore（用于测试或 explore 模式切换） */
+    public setRenderStore(store: EntityRenderStore): void {
+      this.renderStore = store;
+    }
 
     public static getInstance() {
         if (!RendererManager.instance) {
@@ -276,6 +292,11 @@ export class RendererManager {
         this.drawGrid();
         this.subscribeToStore();
 
+        // 初始化战争迷雾（空 Graphics，数据由 exploreStore 驱动）
+        this.fowGraphics = new Graphics();
+        this.fowLayer.addChild(this.fowGraphics);
+        this.subscribeToFow();
+
         this.app.ticker.add(() => {
             this.update(this.app!.ticker.deltaTime);
         });
@@ -334,6 +355,105 @@ export class RendererManager {
     }
 
     // ============================================================
+    //  Fog of War (FOW) — 战争迷雾渲染
+    //  exploreStore.hexVisibility 驱动，仅在变化时重绘
+    //  轴向坐标 (q, r) → 偏移坐标 (col = q, row = r + floor(q/2))
+    // ============================================================
+
+    /** 轴向坐标 (q, r) → 偏移坐标 (col, row) */
+    private axialToOffset(q: number, r: number): { col: number; row: number } {
+        return { col: q, row: r + Math.floor(q / 2) };
+    }
+
+    /** 在 (cx, cy) 处绘制填充六边形路径以供 fill/stroke */
+    private drawFowHexPath(g: Graphics, cx: number, cy: number) {
+        g.moveTo(cx + HEX_CORNERS[0].x, cy + HEX_CORNERS[0].y);
+        for (let i = 1; i <= 6; i++) {
+            g.lineTo(cx + HEX_CORNERS[i % 6].x, cy + HEX_CORNERS[i % 6].y);
+        }
+        g.closePath();
+    }
+
+    /**
+     * 订阅 exploreStore 的 hexVisibility 变化，自动重绘 FOW
+     * 仅在地图加载和迷雾状态变化时触发，不影响每帧性能
+     */
+    private subscribeToFow(): void {
+        if (this.unsubscribeFow) this.unsubscribeFow();
+
+        const redraw = () => {
+            const state = useExploreStore.getState();
+            if (!state.exploreMode || !state.mapData) {
+                // 非探索模式或无地图数据 → 清空迷雾
+                if (this.fowGraphics) this.fowGraphics.clear();
+                return;
+            }
+            this.updateFow(state.hexVisibility, state.mapData.tiles);
+        };
+
+        // 首次渲染
+        redraw();
+
+        // 监听 hexVisibility 和 mapData 的变化
+        this.unsubscribeFow = useExploreStore.subscribe((state) => {
+            // 快速比较：仅当 hexVisibility, mapData, exploreMode 变更时重绘
+            if (state.exploreMode && state.mapData) {
+                this.updateFow(state.hexVisibility, state.mapData.tiles);
+            } else if (this.fowGraphics) {
+                this.fowGraphics.clear();
+            }
+        });
+    }
+
+    /**
+     * 更新战争迷雾渲染
+     *
+     * @param hexVisibility 轴向坐标 → 迷雾状态映射（key = "q,r"）
+     * @param tiles         地图瓦片列表（定义哪些 hex 需要渲染）
+     */
+    private updateFow(
+        hexVisibility: Record<string, HexVisibility>,
+        tiles: TileDef[],
+    ): void {
+        const g = this.fowGraphics;
+        if (!g) return;
+
+        g.clear();
+
+        for (const tile of tiles) {
+            const { q, r } = tile.hex;
+            const key = `${q},${r}`;
+            const fow = hexVisibility[key];
+
+            // 转换为偏移坐标 → 像素
+            const offset = this.axialToOffset(q, r);
+            const pos = hexToPixel(offset.col, offset.row);
+
+            if (!fow) {
+                // 无状态 → 完全未探索：纯黑色不透明
+                this.drawFowHexPath(g, pos.x, pos.y);
+                g.fill({ color: 0x000000, alpha: 0.95 });
+                continue;
+            }
+
+            if (fow.visible) {
+                // 当前可见 → 不绘制迷雾覆盖（实体完全可见）
+                continue;
+            }
+
+            if (fow.explored) {
+                // 已探索但当前不可见 → 半透明暗色覆盖
+                this.drawFowHexPath(g, pos.x, pos.y);
+                g.fill({ color: 0x0a0a0a, alpha: 0.55 });
+            } else {
+                // 从未探索 → 纯黑色
+                this.drawFowHexPath(g, pos.x, pos.y);
+                g.fill({ color: 0x000000, alpha: 0.95 });
+            }
+        }
+    }
+
+    // ============================================================
     //  Entity synchronisation
     // ============================================================
 
@@ -349,6 +469,7 @@ export class RendererManager {
                     this.tokenLayer.removeChild(sprite);
                     sprite.destroy();
                     this.entitySprites.delete(id);
+                    this.renderStore.unregisterEntity(id);
                 }
             }
 
@@ -366,6 +487,9 @@ export class RendererManager {
 
                     this.entitySprites.set(id, sprite);
                     this.tokenLayer.addChild(sprite);
+
+                    // 注册到 EntityRenderStore
+                    this.renderStore.registerEntity(id, pos.x, pos.y, entity.transform.facing);
                 }
 
                 this.syncEntityDisplay(sprite, entity.type, entity.templateId, isSelected);
@@ -503,56 +627,26 @@ export class RendererManager {
         const entities = state.entities;
         const movementTargets = state.movementTargets;
 
-        const LERP_FACTOR = 0.2;
-        const adjustedLerp = 1 - Math.pow(1 - LERP_FACTOR, dt);
-        const TOLERANCE = this.DISPLAY_SCALE * 0.3;
+        // 委托 EntityRenderStore 进行批量插值
+        this.renderStore.interpolateAll(entities, movementTargets, dt, hexToPixel);
 
+        // 从 renderStore 读取插值结果应用到 sprite
         for (const [id, sprite] of this.entitySprites) {
-            const entity = entities[id];
-            if (!entity) continue;
+            const renderState = this.renderStore.getRenderState(id);
+            if (!renderState) continue;
 
-            // Convert authoritative hex coords to pixel position
-            const serverPos = hexToPixel(entity.transform.coords.x, entity.transform.coords.y);
-            const serverX = serverPos.x;
-            const serverY = serverPos.y;
-            const localTarget = movementTargets[id];
-
-            if (localTarget) {
-                const targetPos = hexToPixel(localTarget.x, localTarget.y);
-                const targetX = targetPos.x;
-                const targetY = targetPos.y;
-                const dx = targetX - sprite.x;
-                const dy = targetY - sprite.y;
-                const localDist = Math.sqrt(dx * dx + dy * dy);
-
-                if (localDist < 1) {
-                    sprite.x = targetX;
-                    sprite.y = targetY;
-                    state.clearMovementTarget(id);
-                } else {
-                    sprite.x += dx * adjustedLerp;
-                    sprite.y += dy * adjustedLerp;
-
-                    const serverDist = Math.sqrt(
-                        (serverX - sprite.x) ** 2 + (serverY - sprite.y) ** 2
-                    );
-
-                    if (serverDist > TOLERANCE) {
-                        sprite.x = serverX;
-                        sprite.y = serverY;
-                        state.clearMovementTarget(id);
-                    }
-                }
-            } else {
-                sprite.x += (serverX - sprite.x) * adjustedLerp;
-                sprite.y += (serverY - sprite.y) * adjustedLerp;
+            if (!renderState.visible) {
+                sprite.visible = false;
+                continue;
             }
-
-            const targetFacing = entity.transform.facing;
-            let diff = targetFacing - sprite.angle;
-            while (diff < -180) diff += 360;
-            while (diff > 180) diff -= 360;
-            sprite.angle += diff * adjustedLerp;
+            sprite.visible = true;
+            sprite.x = renderState.x;
+            sprite.y = renderState.y;
+            sprite.angle = renderState.angle;
+            sprite.alpha = renderState.alpha;
+            if (sprite instanceof Sprite) {
+                sprite.scale.set(renderState.scale);
+            }
         }
 
         // Phantom pulse
@@ -689,6 +783,10 @@ export class RendererManager {
             this.unsubscribeStore();
             this.unsubscribeStore = null;
         }
+        if (this.unsubscribeFow) {
+            this.unsubscribeFow();
+            this.unsubscribeFow = null;
+        }
         if (this.app) {
             try {
                 this.app.destroy({ removeView: true }, true);
@@ -698,6 +796,8 @@ export class RendererManager {
             this.app = null;
         }
         this.entitySprites.clear();
+        this.renderStore.clear();
+        this.fowGraphics = null;
         for (const layer of [
             this.groundLayer, this.gridLayer, this.objectLayer,
             this.tokenLayer, this.gmLayer, this.fowLayer, this.previewLayer,

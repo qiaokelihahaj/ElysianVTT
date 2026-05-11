@@ -573,3 +573,146 @@ export const SOCKET_EVENTS = {
   DECISION_POLL: 'DECISION_POLL',
   DECISION_RESPONSE: 'DECISION_RESPONSE',
 } as const;
+
+// ==========================================
+// 8. 地图与瓦片系统 (Map & Tile System — Phase 4.1c)
+// ==========================================
+
+export type TerrainType = 'GROUND' | 'WALL' | 'WATER' | 'OBSTACLE' | 'DOOR';
+
+export interface TileDef {
+  hex: HexCoord;
+  terrain: TerrainType;
+  height?: number;
+  movementCost?: number;
+}
+
+export interface MapData {
+  id: string;
+  name: string;
+  tiles: TileDef[];
+  spawnPoints: Record<string, Vector3D>;
+  width: number;
+  height: number;
+  metadata?: Record<string, any>;
+}
+
+// ==========================================
+// 9. 区域触发系统 (Zone Trigger — Phase 4.3)
+// ==========================================
+
+export type ZoneTriggerType = 'COMBAT' | 'DIALOG' | 'TRAP';
+
+export interface ZoneTriggerDef {
+  id: string;
+  center: Vector3D;
+  radius: number;
+  triggerType: ZoneTriggerType;
+  cooldownTicks: number;
+  oneShot: boolean;
+  active: boolean;
+  payload?: Record<string, any>;  // COMBAT: { encounterId }, DIALOG: { dialogId }, TRAP: { skillCheck, damage }
+  lastTriggeredTick?: number;
+}
+
+// ==========================================
+// Phase 4.1b: 探索引擎类型 (Explore Engine)
+// ==========================================
+
+export interface ExploreEntity extends Entity {
+  /** Hexes this entity has explored (persistent map knowledge) */
+  exploredHexes: HexCoord[];
+  /** Maximum sight range in hexes */
+  sightRange: number;
+  /** Movement points available per exploration turn */
+  movementPoints: number;
+  /** Whether this entity can reveal fog of war */
+  revealsFog: boolean;
+}
+
+export interface MovementResult {
+  success: boolean;
+  entityId: EntityId;
+  fromHex: HexCoord;
+  toHex: HexCoord;
+  path: HexCoord[];
+  cost: number;
+  remainingMovement: number;
+  triggeredHooks: string[];
+  zoneEntries: string[];
+  reason?: string;  // failure reason if !success
+}
+
+/**
+ * Exploration intent: what an entity wants to do in explore mode.
+ * Unlike combat, most explore actions resolve immediately (no tick timeline).
+ */
+export interface ExploreIntent {
+  actorId: EntityId;
+  intentType: 'MOVE' | 'INTERACT' | 'EXAMINE' | 'USE_SKILL' | 'TOGGLE_FOG';
+  /** Target hex for MOVE / EXAMINE */
+  targetHex?: HexCoord;
+  /** Target entity for INTERACT / USE_SKILL */
+  targetEntityId?: EntityId;
+  /** Skill check parameters for USE_SKILL */
+  skillCheck?: {
+    skillName: string;
+    difficulty: number;
+    attributeKey?: string;
+    proficiencyBonus?: number;
+  };
+  /** Movement path (for multi-step moves) */
+  path?: HexCoord[];
+}
+
+export interface SkillCheckResult {
+  success: boolean;
+  criticalSuccess: boolean;
+  criticalFailure: boolean;
+  roll: number;
+  threshold: number;
+  skillName: string;
+  marginOfSuccess: number;
+}
+
+// ==========================================
+// Phase 4.2: 战争迷雾系统类型 (Fog of War)
+// ==========================================
+
+/** Fog of war state for a single hex */
+export type FogState = 'UNEXPLORED' | 'EXPLORED' | 'VISIBLE';
+
+export interface FogCellState {
+  hex: HexCoord;
+  state: FogState;
+  /** Tick when this hex was last seen (for auto-reveal decay) */
+  lastSeenTick: number;
+}
+
+export interface FogOfWarState {
+  /** Serialized fog map keyed by hex string "q,r" */
+  cells: Record<string, FogCellState>;
+  /** Current visible hex set for quick lookup */
+  visibleHexes: HexCoord[];
+}
+
+export interface FogUpdatePayload {
+  entityId: EntityId;
+  /** Newly visible hexes (EXPLORED → VISIBLE) */
+  revealedHexes: HexCoord[];
+  /** Newly obscured hexes (VISIBLE → EXPLORED) */
+  obscuredHexes: HexCoord[];
+  /** Newly explored hexes (UNEXPLORED → EXPLORED) */
+  exploredHexes: HexCoord[];
+}
+
+/** Terrain properties that affect visibility */
+export interface TerrainVisibility {
+  /** Whether this terrain type blocks line of sight entirely */
+  blocksVision: boolean;
+  /** Whether this terrain partially obscures (half cover for vision) */
+  obscuresVision: boolean;
+  /** Height advantage multiplier (>1 means higher ground sees farther) */
+  heightMultiplier: number;
+}
+

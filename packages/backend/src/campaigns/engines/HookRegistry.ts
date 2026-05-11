@@ -34,9 +34,7 @@ export class HookRegistry extends EventEmitter {
             fired: false
         };
 
-        const existing = this.hooks.get(entityId) ?? [];
-        existing.push(hook);
-        this.hooks.set(entityId, existing);
+        this.hooks.set(entityId, [...(this.hooks.get(entityId) ?? []), hook]);
 
         this.logger.debug(
             `Hook '${hook.label}' (${hook.id}) registered for ${entityId}, source=${source}, ttl=${ttl}`,
@@ -102,7 +100,7 @@ export class HookRegistry extends EventEmitter {
                 if (!hook.enabled || hook.fired) continue;
                 if (hook.trigger.type !== 'TICK_REACHED') continue;
                 const target = hook.trigger.targetTick;
-                if (target > fromTick && target < toTick) {
+                if (target > fromTick && target <= toTick) {
                     if (earliest === null || target < earliest) {
                         earliest = target;
                     }
@@ -120,6 +118,7 @@ export class HookRegistry extends EventEmitter {
      * - TICK_REACHED: tick >= trigger.targetTick
      * - ENEMY_ENTERS_RANGE: any ACTOR entity within trigger.range of origin
      * - ENTITY_MOVES_TO: entity position close to trigger.targetHex
+     * - ENTITY_ENTERS_AREA: entity position within trigger.center + radius
      */
     evaluate(tick: Tick, entities: Map<EntityId, Entity>): UnifiedHook[] {
         const fired: UnifiedHook[] = [];
@@ -167,6 +166,15 @@ export class HookRegistry extends EventEmitter {
                         break;
                     }
 
+                    case 'ENTITY_ENTERS_AREA': {
+                        const dist = VectorMath.distance(
+                            entity.transform.coords,
+                            trigger.center
+                        );
+                        matched = dist <= trigger.radius;
+                        break;
+                    }
+
                     default:
                         // Other trigger types not yet implemented
                         break;
@@ -207,13 +215,14 @@ export class HookRegistry extends EventEmitter {
      * - Hooks with ttl > 0 that have exceeded their lifetime are removed
      * - Manual hooks persist until explicitly unregistered
      */
-    cleanup(tick: Tick): void {
+    cleanup(tick: Tick): UnifiedHook[] {
+        const removed: UnifiedHook[] = [];
         for (const [entityId, entityHooks] of this.hooks) {
             const remaining = entityHooks.filter(hook => {
-                // Remove fired system hooks (manual hooks persist until explicit unregister)
-                if (hook.fired && hook.source === 'SYSTEM') return false;
+                // Remove any fired hook (one-shot semantics)
+                if (hook.fired) { removed.push(hook); return false; }
                 // Remove expired hooks (ttl exceeded)
-                if (hook.ttl > 0 && (tick - hook.createdAtTick) >= hook.ttl) return false;
+                if (hook.ttl > 0 && (tick - hook.createdAtTick) >= hook.ttl) { removed.push(hook); return false; }
                 return true;
             });
 
@@ -223,6 +232,10 @@ export class HookRegistry extends EventEmitter {
                 this.hooks.set(entityId, remaining);
             }
         }
+        for (const h of removed) {
+            this.emit('hook_cleaned', h);
+        }
+        return removed;
     }
 
     /**
