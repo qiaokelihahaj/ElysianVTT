@@ -1,5 +1,7 @@
 import { EventEmitter } from 'events';
+import type { IEngineInstance } from '@hard-vtt/shared';
 import { CombatEngine } from './engines/CombatEngine.js';
+import { ExploreEngine } from './engines/ExploreEngine.js';
 import { Logger } from '../utils/Logger.js';
 
 const logger = Logger.create('Campaign:Scene');
@@ -28,8 +30,7 @@ export class Scene extends EventEmitter {
     private state: SceneState = SceneState.CREATED;
     private config: SceneConfig;
 
-    private combatEngine: CombatEngine | null = null;
-    private exploreEngine: any = null;
+    private _engine: IEngineInstance | null = null;
 
     private playerRefCount = 0;
     private playerIds = new Set<string>();
@@ -57,8 +58,16 @@ export class Scene extends EventEmitter {
         return this.playerRefCount === 0;
     }
 
+    get activeEngine(): IEngineInstance | null {
+        return this._engine;
+    }
+
     get activeCombatEngine(): CombatEngine | null {
-        return this.combatEngine;
+        return this._engine?.engineType === 'COMBAT' ? (this._engine as CombatEngine) : null;
+    }
+
+    get activeExploreEngine(): ExploreEngine | null {
+        return this._engine?.engineType === 'EXPLORE' ? (this._engine as ExploreEngine) : null;
     }
 
     isActive(): boolean {
@@ -68,7 +77,8 @@ export class Scene extends EventEmitter {
     canAcceptPlayers(): boolean {
         return this.state === SceneState.CREATED
             || this.state === SceneState.LOADING
-            || this.state === SceneState.ACTIVE;
+            || this.state === SceneState.ACTIVE
+            || this.state === SceneState.PAUSED;
     }
 
     async startLoading(): Promise<void> {
@@ -82,8 +92,8 @@ export class Scene extends EventEmitter {
         logger.info(`Scene ${this.sceneId} loading`, { sceneId: this.sceneId });
     }
 
-    async activate(combatEngine: CombatEngine): Promise<void> {
-        this.combatEngine = combatEngine;
+    async activate(engine: IEngineInstance): Promise<void> {
+        this._engine = engine;
 
         if (this.state === SceneState.CREATED) {
             this.state = SceneState.LOADING;
@@ -185,12 +195,10 @@ export class Scene extends EventEmitter {
 
         this.emit('scene:ending', { sceneId: this.sceneId });
 
-        if (this.combatEngine) {
-            this.combatEngine.removeAllListeners();
-            this.combatEngine = null;
+        if (this._engine) {
+            this._engine.removeAllListeners();
+            this._engine = null;
         }
-
-        this.exploreEngine = null;
 
         this.state = SceneState.DESTROYED;
         this.emit('scene:destroyed', { sceneId: this.sceneId });

@@ -122,7 +122,7 @@ export class MapLoader {
    * 获取所有可通行的瓦片
    */
   public getWalkableTiles(): TileDef[] {
-    return this.getTilesOfType('GROUND');
+    return this.getAllTiles().filter(tile => this.isWalkable(tile.hex));
   }
 
   /**
@@ -150,6 +150,11 @@ export class MapLoader {
 
     const fromKey = hexKey(from);
     const toKey = hexKey(to);
+    let minimumCost = 1;
+    for (const tile of this.tiles.values()) {
+      const cost = this.getMovementCost(tile.hex);
+      if (Number.isFinite(cost) && cost >= 0) minimumCost = Math.min(minimumCost, cost);
+    }
 
     const openSet = new Set<string>([fromKey]);
     // cameFrom: childKey -> parentKey
@@ -158,7 +163,7 @@ export class MapLoader {
     const fScore = new Map<string, number>();
 
     gScore.set(fromKey, 0);
-    fScore.set(fromKey, SpatialSystem.hexDistance(from, to));
+    fScore.set(fromKey, SpatialSystem.hexDistance(from, to) * minimumCost);
 
     while (openSet.size > 0) {
       // 找 fScore 最小的节点
@@ -192,7 +197,7 @@ export class MapLoader {
         if (tentativeG < (gScore.get(nKey) ?? Infinity)) {
           cameFrom.set(nKey, currentKey);
           gScore.set(nKey, tentativeG);
-          fScore.set(nKey, tentativeG + SpatialSystem.hexDistance(neighbor, to));
+          fScore.set(nKey, tentativeG + SpatialSystem.hexDistance(neighbor, to) * minimumCost);
           openSet.add(nKey);
         }
       }

@@ -35,10 +35,10 @@ export class DiceProcessor {
         }));
         
         const processedDice: ProcessedDie[] = [];
-        const queue: RawDie[] = [...rawDice];
+        const queue: RawDie[] = rawDice.map(die => ({ ...die }));
 
-        while (queue.length > 0) {
-            const raw = queue.shift()!;
+        for (let index = 0; index < queue.length; index++) {
+            const raw = queue[index]!;
 
             if (overrides && overrides[raw.id] !== undefined) {
                 raw.faceValue = overrides[raw.id];

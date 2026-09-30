@@ -13,8 +13,8 @@
  * 使用方式：
  *   <SkillCheckPanel />
  */
-import React, { useEffect, useState, useCallback } from 'react';
-import { useExploreStore } from '../../store/exploreStore';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { useExploreStore, type SkillCheckResult } from '../../store/exploreStore';
 
 // ============================================================
 //  Sub-components
@@ -130,38 +130,52 @@ export const SkillCheckPanel: React.FC = () => {
   const skillCheckResult = useExploreStore((s) => s.skillCheckResult);
   const setSkillCheckResult = useExploreStore((s) => s.setSkillCheckResult);
 
-  const [revealed, setRevealed] = useState(false);
-  const [dismissed, setDismissed] = useState(false);
+  // 以结果对象身份关联 UI 状态，新的结果自然从未揭示/未关闭开始。
+  const [revealedResult, setRevealedResult] = useState<SkillCheckResult | null>(null);
+  const [dismissedResult, setDismissedResult] = useState<SkillCheckResult | null>(null);
+  const clearResultTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 重置动画状态，每次新结果触发揭示动画
   useEffect(() => {
     if (skillCheckResult) {
-      setRevealed(false);
-      setDismissed(false);
+      const result = skillCheckResult;
 
       // 短延迟后揭示骰面（模拟滚动动画）
-      const revealTimer = setTimeout(() => setRevealed(true), 400);
+      const revealTimer = setTimeout(() => setRevealedResult(result), 400);
 
       // 自动关闭
       const dismissTimer = setTimeout(() => {
-        setDismissed(true);
+        setDismissedResult(result);
         // 延迟清除 store 中的数据以允许淡出动画
-        setTimeout(() => setSkillCheckResult(null), 300);
+        clearResultTimer.current = setTimeout(() => {
+          if (useExploreStore.getState().skillCheckResult === result) setSkillCheckResult(null);
+          clearResultTimer.current = null;
+        }, 300);
       }, DISMISS_MS);
 
       return () => {
         clearTimeout(revealTimer);
         clearTimeout(dismissTimer);
+        if (clearResultTimer.current !== null) clearTimeout(clearResultTimer.current);
+        clearResultTimer.current = null;
       };
     }
   }, [skillCheckResult, setSkillCheckResult]);
 
   const handleDismiss = useCallback(() => {
-    setDismissed(true);
-    setTimeout(() => setSkillCheckResult(null), 200);
-  }, [setSkillCheckResult]);
+    if (!skillCheckResult) return;
+    setDismissedResult(skillCheckResult);
+    if (clearResultTimer.current !== null) clearTimeout(clearResultTimer.current);
+    clearResultTimer.current = setTimeout(() => {
+      if (useExploreStore.getState().skillCheckResult === skillCheckResult) setSkillCheckResult(null);
+      clearResultTimer.current = null;
+    }, 200);
+  }, [skillCheckResult, setSkillCheckResult]);
 
   if (!skillCheckResult) return null;
+
+  const revealed = revealedResult === skillCheckResult;
+  const dismissed = dismissedResult === skillCheckResult;
 
   const { roll, total, skill, dc, success, critical, fumble } = skillCheckResult;
 

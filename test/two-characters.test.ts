@@ -3,6 +3,13 @@ import { CombatEngine } from '../packages/backend/src/campaigns/engines/CombatEn
 import { Dictionary } from '../packages/backend/src/db/Dictionary.js';
 import type { Entity, ActionTemplate, ClientIntent, ActionScheduledPayload } from '../packages/shared/src/index.js';
 
+function createEngine(sceneId: string): CombatEngine {
+  const engine = new CombatEngine(sceneId);
+  engine.on('DECISION_POLL', (poll: { windowId: string }) => {
+    engine.handleDecisionResponse({ windowId: poll.windowId, chosenOptionId: null }, 'timeline-test');
+  });
+  return engine;
+}
 function makeActor(id: string, name: string, x = 0, y = 0, hp = 100): Entity {
   return {
     id, templateId: name, type: 'ACTOR',
@@ -14,9 +21,7 @@ function makeActor(id: string, name: string, x = 0, y = 0, hp = 100): Entity {
 }
 
 function registerAction(template: ActionTemplate) {
-  const dict = Dictionary as any;
-  if (!dict.actions) dict.actions = new Map<string, ActionTemplate>();
-  dict.actions.set(template.id, template);
+  Dictionary.registerAction(template);
 }
 
 let testCount = 0, passCount = 0;
@@ -64,7 +69,7 @@ function runTests() {
   // ------------------------------------------------------------------
   {
     console.log('[Test 1] 战士快速斩 + 法师火球术 — 验证 Timeline 数据');
-    const engine = new CombatEngine('test-2p-1');
+    const engine = createEngine('test-2p-1');
     const warrior = makeActor('warrior', '战士');
     const mage = makeActor('mage', '法师', 1, 0);
     engine.mountEntities([warrior, mage]);
@@ -124,7 +129,7 @@ function runTests() {
   // ------------------------------------------------------------------
   {
     console.log('\n[Test 2] Channel 动作 — 验证 pulseTicks 和 endTick');
-    const engine = new CombatEngine('test-2p-2');
+    const engine = createEngine('test-2p-2');
     const warrior = makeActor('warrior', '战士');
     const dummy = makeActor('dummy', '木桩', 2, 0, 999);
     engine.mountEntities([warrior, dummy]);
@@ -163,7 +168,7 @@ function runTests() {
   // ------------------------------------------------------------------
   {
     console.log('\n[Test 3] 双角色混合 — 战士移动 + 法师火球术');
-    const engine = new CombatEngine('test-2p-3');
+    const engine = createEngine('test-2p-3');
     const warrior = makeActor('warrior', '战士');
     const mage = makeActor('mage', '法师', 5, 0);
     engine.mountEntities([warrior, mage]);
@@ -218,7 +223,7 @@ function runTests() {
   // ------------------------------------------------------------------
   {
     console.log('\n[Test 4] 两个角色顺序使用快速斩 — 验证 sequential 时间轴');
-    const engine = new CombatEngine('test-2p-4');
+    const engine = createEngine('test-2p-4');
     const a = makeActor('hero_a', '勇者A');
     const b = makeActor('hero_b', '勇者B', 2, 0);
     engine.mountEntities([a, b]);
@@ -262,7 +267,7 @@ function runTests() {
   // ------------------------------------------------------------------
   {
     console.log('\n[Test 5] 前端 TickMeter 数据完整性检查');
-    const engine = new CombatEngine('test-2p-5');
+    const engine = createEngine('test-2p-5');
     const actors = [
       makeActor('p1', '玩家1'),
       makeActor('p2', '玩家2', 4, 0),
@@ -318,7 +323,7 @@ function runTests() {
   // ------------------------------------------------------------------
   {
     console.log('\n[Test 6] Batch Cast — 两个角色同时施法，时间轴重叠');
-    const engine = new CombatEngine('test-2p-6');
+    const engine = createEngine('test-2p-6');
     const a = makeActor('hero_a', '勇者A');
     const b = makeActor('hero_b', '勇者B', 2, 0);
     engine.mountEntities([a, b]);

@@ -1,8 +1,22 @@
 # 🎲 ElysianVTT
 
+空间战术整合场景 **「断桥堡垒」**：运行 `pnpm demo:tactics`，默认打开 `http://127.0.0.1:3001`。支持一名 GM 独立演练或 1 GM + 3 玩家，串联冲刺、触及、背刺、弹道、掩体、护卫、封锁、范围攻击与部位破坏。使用独立 `.demo-tactics` 存档；[游玩说明](docs/SPATIAL_TACTICS_DEMO.md)列出操作路线与验证范围。
+
+局域网 **1 GM + 3 玩家战术遭遇 Demo**：运行 `pnpm demo`，按[启动与游玩说明](docs/DEMO_QUICKSTART.md)入场。Demo 使用独立存档与正式主持/玩家入口；[实施与验收记录](docs/DEMO_IMPLEMENTATION.md)列出本轮通过项及剩余限制。
+
 **ElysianVTT** 是一个基于「连续时间轴（Tick System）」与「多资源池博弈（韧性/专注）」的硬核战术动作类 TRPG（跑团）虚拟桌面引擎。
 
-不同于传统的回合制 VTT，ElysianVTT 采用**后端主导的离散事件模拟**，Tick 与动作堆循环驱动战斗，结合前端 WebGL (PixiJS) 实现平滑渲染与状态同步。
+ElysianVTT 采用**后端主导的离散事件模拟**，由 Tick 与事件堆驱动战斗。当前可玩入口是 React + Zustand + SVG 六边形战场的 DemoApp；仓库同时保留 PixiJS 通用渲染模块。
+
+局域网 Demo 使用独立的 `node:sqlite` 存档（默认 `.demo/demo.db`），在开局、明确检查点和结算时保存。通用开发服务另用 Prisma + SQLite，两者目前不共用认证、网络协议或存档。
+
+局域网链路的会话、遭遇编排、网络服务和 SQLite 存储已从 Demo 提取到正式模块；`demo/` 提供示例内容、启动配置及旧导入兼容层。模块职责、组合方式和保留边界见[局域网模块架构](docs/LAN_MODULES.md)。
+
+遭遇编排内的动作计划、决策窗口和 GM 修正分别由独立服务负责；正式遭遇与引擎使用实例规则目录，允许不同遭遇复用相同动作 ID 而互不覆盖。
+
+遭遇前端采用[模块化战术工作台](docs/WORKSPACE_UI.md)：地图铺满底层桌面，时间轴、行动/反应、日志与 GM 工具支持浮动、拖动、缩放、折叠和布局记忆，窄屏保持浮窗并限制在可见范围。
+
+第四阶段提供可重复的网络体积、状态应用次数和 Tick 推进耗时测量，详见[性能测量与同步决策](docs/LAN_PERFORMANCE.md)。当前保留过滤后的完整快照协议；测量结果用于评估扩规模成本，不代表真实路由器或弱网性能认证。
 
 ---
 
@@ -34,7 +48,7 @@
 |------|------|
 | React v19 + TypeScript | UI 框架 |
 | Vite v8 | 构建工具与开发服务器 |
-| PixiJS v8 | WebGL 渲染引擎 |
+| SVG / PixiJS v8 | 当前 Demo 六边形战场 / 保留的通用 WebGL 渲染模块 |
 | Zustand v5 | 状态管理 |
 | Tailwind CSS v4 | 原子化 CSS |
 
@@ -60,7 +74,12 @@ ElysianVTT/
 │   │   │   │   ├── systems/ # CombatSystem、EffectSystem、RuleEvaluator、SpatialSystem
 │   │   │   │   └── events/  # ActionEvents、EventFactory
 │   │   │   ├── campaigns/   # CampaignManager、CombatEngine、ExploreEngine、SettlementService
-│   │   │   ├── network/     # SocketServer、IntentRouter、StateBroadcaster、VisibilityFilter
+│   │   │   ├── network/     # EncounterServer；保留旧 SocketServer 等通用开发模块
+│   │   │   ├── sessions/    # LanSessionService：会话和逐连接生命周期
+│   │   │   ├── encounters/  # EncounterCoordinator：遭遇编排、决策与日志桥
+│   │   │   ├── rules/       # ActionCatalog：每个遭遇/引擎的独立动作目录
+│   │   │   ├── persistence/ # EncounterRepository 接口与 SQLite 适配器
+│   │   │   ├── demo/        # 示例规则、启动配置和旧导入兼容层
 │   │   │   ├── db/          # Prisma 客户端、Dictionary、Repository、种子数据
 │   │   │   └── utils/       # IdGenerator、dice/ (掷骰系统)、Logger、VectorMath、SafeJsonParser
 │   │   └── src/README.md    # 后端架构详细文档
@@ -89,55 +108,68 @@ ElysianVTT/
 
 运行环境检查：
 ```bash
-node verify-env.js
+pnpm check
 ```
 需要：Node.js v22.x、pnpm v10.x、Docker（可选，用于容器化开发）。
 
-### Docker 一键启动
+### Docker 通用开发环境（非局域网可玩入口）
 
 ```bash
 docker-compose up
 ```
-- 后端：`http://localhost:3000`
-- 前端：`http://localhost:5173`
+- 本机前端：`http://127.0.0.1:5173`；后端 3000 端口不发布到宿主机。
+- 前后端共享容器网络命名空间，Vite 通过回环地址代理 API 与 Socket。
+- 当前 DemoApp 的可玩服务请使用 `pnpm demo`；通用开发服务不提供 Demo 协议。
+
+通用后端固定监听 `127.0.0.1`，`/auth/login` 默认返回 `403 DEV_LOGIN_DISABLED`。仅本机通用开发夹具可显式设置 `ELYSIAN_ENABLE_DEV_LOGIN=1`，生产模式始终禁止该登录。该入口仍有未完成的认证与广播可见性边界，不能作为正式多人服务开放。
 
 两个服务均挂载项目目录，支持热更新。
 
 ### 手动启动
 
 ```bash
-# 1. 安装依赖
+# 1. 安装依赖并检查环境
 pnpm install
+pnpm check
 
-# 2. 构建共享包
-pnpm --filter @hard-vtt/shared build
+# 2. 生成 Prisma Client、推送 Schema 并灌入种子数据
+pnpm db:generate
+pnpm db:push
+pnpm db:seed
 
-# 3. 初始化数据库
-cd packages/backend
-pnpm db:push                        # 推送 Schema 到 SQLite
-npx ts-node src/db/seed.ts          # 灌入种子数据
-cd ../..
+# 3. 启动后端（监听 + 自动重启）
+pnpm dev:backend
 
-# 4. 启动后端（监听 + 自动重启）
-pnpm --filter @hard-vtt/backend dev
-
-# 5. 启动前端（另开终端）
-pnpm --filter @hard-vtt/frontend dev
+# 4. 启动前端（另开终端）
+pnpm dev:frontend
 ```
 
 ### 运行测试
 
 ```bash
-cd test
-npx tsx core.test.ts
+pnpm test                 # smoke 测试
+pnpm test:unit            # 战斗核心 unit 测试
+pnpm test:integration     # 引擎集成测试
+pnpm test:security        # 认证、权限与安全回归
+pnpm test:audit           # 日常跑团缺陷审计回归
+pnpm test:audit:browser   # 前端异步与组件生命周期回归
 ```
+
+首期局域网 Demo 的隔离服务回归与真实浏览器验收：
+
+```bash
+pnpm test:lan             # 显式 Demo/认证/权限清单，使用临时 SQLite
+pnpm test:lan:browser     # 构建产物上的四 context Chromium UI 验收
+pnpm test:lan:perf        # 隔离运行网络、Tick 与客户端状态应用性能测量
+pnpm verify:lan           # build → frontend lint → service → browser
+```
+
+浏览器验收、证据脱敏、退出码和已知认证边界见 [`docs/LAN_BROWSER_ACCEPTANCE.md`](docs/LAN_BROWSER_ACCEPTANCE.md)。
 
 ### 生产构建
 
 ```bash
-pnpm --filter @hard-vtt/shared build
-pnpm --filter @hard-vtt/backend build
-pnpm --filter @hard-vtt/frontend build     # tsc -b && vite build
+pnpm build                # shared → backend → frontend
 ```
 
 ---

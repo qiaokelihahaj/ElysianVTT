@@ -74,4 +74,31 @@ export class VectorMath {
         const r = Math.round((-1 / 3 * v3.x + Math.sqrt(3) / 3 * v3.y) / 1);
         return { q, r };
     }
+
+    /** 轴向坐标 (q, r) → 偏移坐标 (col, row) */
+    public static axialToOffset(hex: HexCoord): { col: number; row: number; z: number } {
+        return { col: hex.q, row: hex.r + Math.floor(hex.q / 2), z: 0 };
+    }
+
+    /** 偏移坐标 (col, row) → 轴向坐标 (q, r) */
+    public static offsetToAxial(col: number, row: number): HexCoord {
+        return { q: col, r: row - Math.floor(col / 2) };
+    }
+
+    /**
+     * 计算从偏移坐标 A 到 B 的方向角度（度）
+     * 基于 flat-top 六边形像素坐标计算 atan2
+     * 0° = 正右方, 90° = 正下方
+     */
+    public static directionAngleFromOffset(
+        fromCol: number, fromRow: number,
+        toCol: number, toRow: number,
+    ): number {
+        const SQRT3 = Math.sqrt(3);
+        const x1 = 1.5 * fromCol;
+        const y1 = SQRT3 * fromRow + (fromCol & 1) * SQRT3 / 2;
+        const x2 = 1.5 * toCol;
+        const y2 = SQRT3 * toRow + (toCol & 1) * SQRT3 / 2;
+        return Math.atan2(y2 - y1, x2 - x1) * (180 / Math.PI);
+    }
 }

@@ -3,8 +3,8 @@ import { EventEmitter } from 'events';
 import {
   IEngineInstance, Tick, ClientIntent, Entity, EntityId, Vector3D, HexCoord,
   ExploreEntity, MovementResult, ExploreIntent, SkillCheckResult,
-  StateMutationPayload, VisualEventPayload,
-  MapData, ZoneTriggerDef, FogUpdatePayload,
+  StateMutationPayload,
+  MapData, ZoneTriggerDef, FogUpdatePayload, FogCellState,
   LogVisibility, HookTrigger,
 } from '@hard-vtt/shared';
 import { SpatialSystem } from '../../core/systems/SpatialSystem.js';
@@ -12,6 +12,7 @@ import { VectorMath } from '../../utils/VectorMath.js';
 import { generateId } from '../../utils/IdGenerator.js';
 import { Logger } from '../../utils/Logger.js';
 import { HookRegistry } from './HookRegistry.js';
+import { FogOfWar } from '../../core/systems/FogOfWar.js';
 
 /**
  * ExploreEngine — 探索模式引擎
@@ -36,6 +37,8 @@ export class ExploreEngine extends EventEmitter implements IEngineInstance {
   private zoneTriggers: ZoneTriggerDef[] = [];
   private hookRegistry: HookRegistry;
   private logger: Logger;
+  /** 战争迷雾系统 */
+  private fogOfWar: FogOfWar;
   /** 待发送的状态变更累积 */
   private pendingMutations: StateMutationPayload = { tick: 0, mutations: [] };
   /** 最新的迷雾更新（供每步移动后广播） */
@@ -46,6 +49,7 @@ export class ExploreEngine extends EventEmitter implements IEngineInstance {
     this.engineId = engineId;
     this.logger = Logger.create('Engine:Explore');
     this.hookRegistry = new HookRegistry();
+    this.fogOfWar = new FogOfWar(6);
     this.logger.info(`ExploreEngine created`, null, { sceneId: this.engineId });
   }
 
@@ -56,8 +60,9 @@ export class ExploreEngine extends EventEmitter implements IEngineInstance {
   /** 加载地图数据 */
   loadMap(mapData: MapData): void {
     this.mapData = mapData;
+    this.fogOfWar.initializeMap(mapData, this._currentTick);
     this.logger.info(
-      `Map '${mapData.name}' loaded: ${mapData.tiles.length} tiles`,
+      `Map '${mapData.name}' loaded: ${mapData.tiles.length} tiles (FOW initialized)`,
       { mapId: mapData.id, tileCount: mapData.tiles.length },
       { sceneId: this.engineId }
     );
@@ -83,15 +88,31 @@ export class ExploreEngine extends EventEmitter implements IEngineInstance {
   // ============================================================
 
   mountEntities(entities: Entity[]): void {
-    for (const entity of entities) {
+    // 探索模式：将实体放置到地图有效 hex 上（偏移坐标，与战斗模式一致）
+    const validHexes = this.getValidSpawnHexes(entities.length);
+    for (let i = 0; i < entities.length; i++) {
+      const entity = entities[i];
       const exploreEntity = this.toExploreEntity(entity);
+      // 轴向 hex → 偏移坐标 (col, row)，与战斗模式坐标系统一致
+      if (validHexes[i]) {
+        const offset = VectorMath.axialToOffset(validHexes[i]);
+        exploreEntity.transform = {
+          ...exploreEntity.transform,
+          coords: { x: offset.col, y: offset.row, z: 0 },
+        };
+      }
       this.entities.set(entity.id, exploreEntity);
     }
     this.logger.info(
-      `Mounted ${entities.length} entities`,
-      { entityIds: entities.map(e => e.id) },
+      `Mounted ${entities.length} entities (repositioned to valid hexes)`,
+      { entityIds: entities.map(e => e.id), hexes: validHexes.slice(0, entities.length) },
       { sceneId: this.engineId }
     );
+
+    // 计算初始视野
+    if (this.mapData) {
+      this.refreshAllFog();
+    }
   }
 
   unmountEntities(entityIds: EntityId[]): Entity[] {
@@ -101,6 +122,12 @@ export class ExploreEngine extends EventEmitter implements IEngineInstance {
       if (ent) {
         removed.push(ent);
         this.entities.delete(id);
+        for (const hook of [...this.hookRegistry.getHooksForEntity(id)]) this.hookRegistry.unregister(hook.id);
+        const update = this.fogOfWar.removeEntity(id);
+        if (update.obscuredHexes.length > 0) {
+          this.latestFogUpdate = update;
+          this.emit('FOG_UPDATED', update);
+        }
       }
     }
     return removed;
@@ -119,6 +146,9 @@ export class ExploreEngine extends EventEmitter implements IEngineInstance {
         break;
       case 'INTERACT':
         this.handleExploreInteract(actor, intent);
+        break;
+      case 'ROTATE':
+        this.handleExploreRotate(actor, intent);
         break;
       default:
         this.logger.warn(
@@ -149,8 +179,9 @@ export class ExploreEngine extends EventEmitter implements IEngineInstance {
       return;
     }
 
-    const fromHex = VectorMath.vector3DToHex(actor.transform.coords);
-    const toHex = VectorMath.vector3DToHex(targetCoords);
+    // 偏移坐标 → 轴向坐标（与战斗模式一致：coords.x=col, coords.y=row）
+    const fromHex = VectorMath.offsetToAxial(actor.transform.coords.x, actor.transform.coords.y);
+    const toHex = VectorMath.offsetToAxial(targetCoords.x, targetCoords.y);
 
     // 计算路径：利用前端传入的路径或自行推算
     const payload = intent.payload as Record<string, any>;
@@ -198,28 +229,41 @@ export class ExploreEngine extends EventEmitter implements IEngineInstance {
       return;
     }
 
-    // 逐 hex 执行移动
+    // 逐 hex 执行移动（path 中为轴向 hex，转换为偏移坐标存储）
     const triggeredHooks: string[] = [];
     const zoneEntries: string[] = [];
     const previousCoords = { ...actor.transform.coords };
 
     for (const hex of path) {
-      const newCoords = VectorMath.hexToVector3D(hex, actor.transform.coords.z ?? 0);
+      const offset = VectorMath.axialToOffset(hex);
+      const worldFrom = VectorMath.hexToVector3D(VectorMath.offsetToAxial(previousCoords.x, previousCoords.y));
+      const worldTo = VectorMath.hexToVector3D(hex);
 
-      // 更新实体坐标
+      // 计算朝向：从上一个位置指向新位置
+      const newFacing = VectorMath.directionAngleFromOffset(
+        previousCoords.x, previousCoords.y,
+        offset.col, offset.row,
+      );
+
+      // 更新实体坐标（偏移坐标，与战斗模式一致）
       actor.transform = {
         ...actor.transform,
-        coords: newCoords,
+        coords: { x: offset.col, y: offset.row, z: actor.transform.coords.z ?? 0 },
+        facing: newFacing,
       };
 
+      // 暂存用于下一步朝向计算
+      previousCoords.x = offset.col;
+      previousCoords.y = offset.row;
+
       // 检查 ENTITY_MOVES_TO 钩子
-      const firedHooks = this.checkEntityMovesHooks(actor, hex);
+      const firedHooks = this.hookRegistry.evaluate(this._currentTick, this.entities);
       for (const h of firedHooks) {
         triggeredHooks.push(h.id);
       }
 
-      // 检查 ENTITY_ENTERS_AREA 钩子
-      const enteredZones = this.checkZoneEntries(actor, previousCoords, newCoords);
+      // 检查 ENTITY_ENTERS_AREA 钩子（传入世界坐标用于 SpatialSystem 距离计算）
+      const enteredZones = this.checkZoneEntries(actor, worldFrom, worldTo);
       for (const zId of enteredZones) {
         zoneEntries.push(zId);
       }
@@ -228,16 +272,17 @@ export class ExploreEngine extends EventEmitter implements IEngineInstance {
     // 更新移动点
     actor.movementPoints -= moveCost;
 
-    // 记录状态变更
-    const finalCoords = VectorMath.hexToVector3D(path[path.length - 1], actor.transform.coords.z ?? 0);
+    // 记录状态变更（偏移坐标 + 朝向）
+    const finalOffset = VectorMath.axialToOffset(path[path.length - 1]);
     this.recordMutation(actor.id, {
-      'transform.coords.x': finalCoords.x,
-      'transform.coords.y': finalCoords.y,
-      'transform.coords.z': finalCoords.z,
+      'transform.coords.x': finalOffset.col,
+      'transform.coords.y': finalOffset.row,
+      'transform.coords.z': actor.transform.coords.z ?? 0,
+      'transform.facing': actor.transform.facing,
       'movementPoints': actor.movementPoints,
     });
 
-    // 广播移动结果
+    // 广播移动结果（fromHex/toHex 保持轴向，供前端调试）
     const result: MovementResult = {
       success: true,
       entityId: actor.id,
@@ -259,11 +304,11 @@ export class ExploreEngine extends EventEmitter implements IEngineInstance {
       { sceneId: this.engineId }
     );
 
-    // 检查区域触发器
-    this.checkAndFireZoneTriggers(actor, toHex);
-
     // 广播状态变更
     this.flushMutations();
+
+    // 刷新战争迷雾
+    this.refreshFogAfterMove(actor.id);
 
     this._currentTick++;
   }
@@ -287,9 +332,11 @@ export class ExploreEngine extends EventEmitter implements IEngineInstance {
       return;
     }
 
-    // 检查距离
-    const dist = VectorMath.distance(actor.transform.coords, target.transform.coords);
-    const interactRange = 1.5;
+    // 检查距离（偏移坐标 → 轴向 → hexDistance）
+    const actorHex = VectorMath.offsetToAxial(actor.transform.coords.x, actor.transform.coords.y);
+    const targetHex = VectorMath.offsetToAxial(target.transform.coords.x, target.transform.coords.y);
+    const dist = SpatialSystem.hexDistance(actorHex, targetHex);
+    const interactRange = 1; // 1 hex 相邻
     if (dist > interactRange) {
       this.logger.game(
         `🔍 [Explore] ${actor.id} 距离 ${target.id} 太远 (${dist.toFixed(1)} > ${interactRange})`,
@@ -334,6 +381,55 @@ export class ExploreEngine extends EventEmitter implements IEngineInstance {
   }
 
   /**
+   * 处理旋转意图（ROTATE）：改变实体朝向
+   * 每 60° 消耗 1 移动点（类似移动的耗时动作）
+   */
+  private handleExploreRotate(actor: ExploreEntity, intent: ClientIntent): void {
+    const payload = intent.payload as Record<string, any>;
+    const delta = (payload.rotationDelta as number) ?? 60;
+
+    // 计算消耗：每 60° = 1 MP
+    const cost = Math.ceil(Math.abs(delta) / 60);
+    if (cost > actor.movementPoints) {
+      this.logger.game(
+        `🔄 [Explore] ${actor.id} 旋转不足: 需要 ${cost} MP, 剩余 ${actor.movementPoints}`,
+        { actorId: actor.id, delta, cost },
+        LogVisibility.PLAYER,
+        { sceneId: this.engineId }
+      );
+      return;
+    }
+
+    const currentFacing = actor.transform.facing ?? 0;
+    const newFacing = ((currentFacing + delta) % 360 + 360) % 360;
+
+    actor.transform = {
+      ...actor.transform,
+      facing: newFacing,
+    };
+    actor.movementPoints -= cost;
+
+    this.recordMutation(actor.id, {
+      'transform.facing': newFacing,
+      'movementPoints': actor.movementPoints,
+    });
+
+    this.flushMutations();
+
+    this.logger.game(
+      `🔄 [Explore] ${actor.id} 旋转 ${delta > 0 ? '+' : ''}${delta}° → ${newFacing.toFixed(0)}° (消耗 ${cost} MP, 剩余 ${actor.movementPoints})`,
+      { actorId: actor.id, delta, newFacing, cost },
+      LogVisibility.PLAYER,
+      { sceneId: this.engineId }
+    );
+
+    // 旋转后刷新迷雾
+    this.refreshFogAfterMove(actor.id);
+
+    this._currentTick++;
+  }
+
+  /**
    * 处理检查意图（EXAMINE）：对目标进行更详细的鉴定
    */
   handleExamineIntent(actor: ExploreEntity, targetId: EntityId): void {
@@ -343,7 +439,9 @@ export class ExploreEngine extends EventEmitter implements IEngineInstance {
       return;
     }
 
-    const dist = VectorMath.distance(actor.transform.coords, target.transform.coords);
+    const actorHex = VectorMath.offsetToAxial(actor.transform.coords.x, actor.transform.coords.y);
+    const targetHex = VectorMath.offsetToAxial(target.transform.coords.x, target.transform.coords.y);
+    const dist = SpatialSystem.hexDistance(actorHex, targetHex);
     if (dist > 3) {
       this.emit('EXAMINE_FAILED', {
         actorId: actor.id,
@@ -433,17 +531,6 @@ export class ExploreEngine extends EventEmitter implements IEngineInstance {
   // ============================================================
 
   /**
-   * 检查 ENTITY_MOVES_TO 钩子
-   * 委托给 HookRegistry 评估，检测实体是否移动到目标 hex
-   */
-  private checkEntityMovesHooks(actor: ExploreEntity, currentHex: HexCoord): ReturnType<HookRegistry['evaluate']> {
-    // 临时将实体位置映射到 hex 空间以便 HookRegistry 检查
-    // HookRegistry.evaluate 中 ENTITY_MOVES_TO 检查距离 < 1.5
-    // 由于我们已经将实体坐标更新为 hex 的 Vector3D 坐标，直接评估即可
-    return this.hookRegistry.evaluate(this._currentTick, this.entityMap());
-  }
-
-  /**
    * 检查实体是否进入了封锁/触发区域
    */
   private checkZoneEntries(
@@ -476,23 +563,10 @@ export class ExploreEngine extends EventEmitter implements IEngineInstance {
           triggerType: trigger.triggerType,
           payload: trigger.payload,
         });
-      }
-    }
+        if (trigger.oneShot && trigger.lastTriggeredTick !== undefined) continue;
+        if (trigger.lastTriggeredTick !== undefined
+          && this._currentTick - trigger.lastTriggeredTick < trigger.cooldownTicks) continue;
 
-    return entered;
-  }
-
-  /**
-   * 检查区域触发器（基于 hex 位置）
-   */
-  private checkAndFireZoneTriggers(actor: ExploreEntity, hex: HexCoord): void {
-    const coords = VectorMath.hexToVector3D(hex);
-    for (const trigger of this.zoneTriggers) {
-      if (!trigger.active) continue;
-      if (trigger.oneShot && trigger.lastTriggeredTick !== undefined) continue;
-
-      const dist = VectorMath.distance(trigger.center, coords);
-      if (dist <= trigger.radius) {
         trigger.lastTriggeredTick = this._currentTick;
         this.emit('ZONE_TRIGGERED', {
           entityId: actor.id,
@@ -509,6 +583,8 @@ export class ExploreEngine extends EventEmitter implements IEngineInstance {
         );
       }
     }
+
+    return entered;
   }
 
   // ============================================================
@@ -578,6 +654,7 @@ export class ExploreEngine extends EventEmitter implements IEngineInstance {
   private calculatePathCost(path: HexCoord[]): number {
     let cost = 0;
     for (const hex of path) {
+      if (!this.isHexPassable(hex)) return 999;
       const tileCost = this.getTileMovementCost(hex);
       cost += tileCost;
     }
@@ -593,7 +670,11 @@ export class ExploreEngine extends EventEmitter implements IEngineInstance {
     const tile = this.mapData.tiles.find(
       t => t.hex.q === hex.q && t.hex.r === hex.r
     );
-    return tile?.movementCost ?? 1;
+    if (!tile) return 1;
+    // movementCost < 0 表示不可通行，返回极大值阻止寻路
+    const mc = tile.movementCost ?? 1;
+    if (mc < 0) return 999;
+    return mc;
   }
 
   /**
@@ -605,7 +686,7 @@ export class ExploreEngine extends EventEmitter implements IEngineInstance {
     const tile = this.mapData.tiles.find(
       t => t.hex.q === hex.q && t.hex.r === hex.r
     );
-    if (!tile) return true;
+    if (!tile) return false;
 
     return tile.terrain !== 'WALL' && tile.terrain !== 'OBSTACLE';
   }
@@ -662,6 +743,34 @@ export class ExploreEngine extends EventEmitter implements IEngineInstance {
     return Array.from(this.entities.values());
   }
 
+  /** 获取已安排动作列表（探索模式无时间轴，始终为空） */
+  getScheduledActions(): any[] {
+    return [];
+  }
+
+  /** 获取活跃钩子预设（供 SCENE_SYNC 同步） */
+  getActiveHookPresets(): { id: string; entityId: string; label: string; trigger: any; enabled: boolean }[] {
+    return this.hookRegistry.getAll()
+      .filter(h => h.enabled && !h.fired)
+      .map(h => ({
+        id: h.id,
+        entityId: h.entityId,
+        label: h.label,
+        trigger: h.trigger,
+        enabled: h.enabled
+      }));
+  }
+
+  /** 获取活跃决策窗口（探索模式无决策窗口，始终为空） */
+  getActiveDecisionPolls(): any[] {
+    return [];
+  }
+
+  /** 获取待决决策数量（始终为 0） */
+  getPendingDecisionCount(): number {
+    return 0;
+  }
+
   /** 获取单个探索实体 */
   getEntity(id: EntityId): ExploreEntity | undefined {
     return this.entities.get(id);
@@ -670,7 +779,7 @@ export class ExploreEngine extends EventEmitter implements IEngineInstance {
   /** 获取指定 hex 上的所有实体 */
   getEntitiesAtHex(hex: HexCoord): ExploreEntity[] {
     return Array.from(this.entities.values()).filter(e => {
-      const entityHex = VectorMath.vector3DToHex(e.transform.coords);
+      const entityHex = VectorMath.offsetToAxial(e.transform.coords.x, e.transform.coords.y);
       return entityHex.q === hex.q && entityHex.r === hex.r;
     });
   }
@@ -678,7 +787,7 @@ export class ExploreEngine extends EventEmitter implements IEngineInstance {
   /** 获取指定范围内的所有实体 */
   getEntitiesInRange(center: HexCoord, range: number): ExploreEntity[] {
     return Array.from(this.entities.values()).filter(e => {
-      const entityHex = VectorMath.vector3DToHex(e.transform.coords);
+      const entityHex = VectorMath.offsetToAxial(e.transform.coords.x, e.transform.coords.y);
       return SpatialSystem.hexDistance(center, entityHex) <= range;
     });
   }
@@ -700,6 +809,91 @@ export class ExploreEngine extends EventEmitter implements IEngineInstance {
   /** 设置迷雾更新 */
   setLatestFogUpdate(update: FogUpdatePayload): void {
     this.latestFogUpdate = update;
+  }
+
+  /** 获取完整迷雾状态（供 SCENE_SYNC 同步） */
+  getFowState(): Record<string, FogCellState> {
+    return this.fogOfWar.getExploredMap();
+  }
+
+  /** 获取每个实体的可见 hex 集合（供前端按角色渲染 FOW） */
+  getPerEntityFowState(): Record<string, string[]> {
+    return this.fogOfWar.getPerEntityFowState();
+  }
+
+  /** 获取全局 FOW 状态（hexKey → FogState） */
+  getGlobalFowState(): Record<string, string> {
+    return this.fogOfWar.getGlobalFowState();
+  }
+
+  // ============================================================
+  //  FOW 管理
+  // ============================================================
+
+  /** 重新计算所有实体的迷雾 */
+  private refreshAllFog(): void {
+    const entityList = Array.from(this.entities.values());
+    const updates = this.fogOfWar.updateFogForAll(
+      entityList, this.mapData, this._currentTick,
+      (coords) => VectorMath.offsetToAxial(coords.x, coords.y),
+    );
+    if (updates.length > 0) {
+      this.latestFogUpdate = updates[updates.length - 1];
+    }
+    this.logger.debug(
+      `FOW refreshed for ${entityList.length} entities`,
+      { updates: updates.map(u => ({ id: u.entityId, revealed: u.revealedHexes.length, explored: u.exploredHexes.length })) },
+    );
+  }
+
+  /** 执行移动后刷新迷雾并广播 */
+  private refreshFogAfterMove(entityId: string): void {
+    const entity = this.entities.get(entityId);
+    if (!entity || !this.mapData) return;
+    if (!entity.revealsFog) return;
+
+    const originHex = VectorMath.offsetToAxial(entity.transform.coords.x, entity.transform.coords.y);
+    const sightRange = entity.sightRange ?? 6;
+    const fov = this.fogOfWar.calculateFOV(
+      originHex, this.mapData, Array.from(this.entities.values()), sightRange,
+    );
+    const update = this.fogOfWar.updateFog(entity, fov, this._currentTick);
+    this.latestFogUpdate = update;
+
+    if (update.revealedHexes.length > 0 || update.exploredHexes.length > 0 || update.obscuredHexes.length > 0) {
+      this.emit('FOG_UPDATED', update);
+    }
+  }
+
+  /**
+   * 获取有效生成 hex 列表（GROUND/DOOR 等可行走地形）
+   * 按与 spawn point 的距离排序
+   */
+  private getValidSpawnHexes(count: number): HexCoord[] {
+    if (!this.mapData) return [];
+
+    const passable = this.mapData.tiles
+      .filter(t => this.isHexPassable(t.hex))
+      .map(t => t.hex);
+
+    // 优先选择靠中心的位置
+    const centerQ = Math.floor(this.mapData.width / 2);
+    const centerR = Math.floor(this.mapData.height / 2);
+
+    passable.sort((a, b) => {
+      const da = SpatialSystem.hexDistance({ q: centerQ, r: centerR }, a);
+      const db = SpatialSystem.hexDistance({ q: centerQ, r: centerR }, b);
+      return da - db;
+    });
+
+    // 均匀分布
+    const selected: HexCoord[] = [];
+    const step = Math.max(1, Math.floor(passable.length / count));
+    for (let i = 0; i < count; i++) {
+      const idx = Math.min(i * step, passable.length - 1);
+      selected.push(passable[idx]);
+    }
+    return selected;
   }
 
   // ============================================================
@@ -724,12 +918,6 @@ export class ExploreEngine extends EventEmitter implements IEngineInstance {
       explore.revealsFog = entity.type === 'ACTOR';
     }
     return explore;
-  }
-
-  private entityMap(): Map<EntityId, Entity> {
-    // HookRegistry expects Map<EntityId, Entity> but we have ExploreEntity
-    // ExploreEntity extends Entity so this is safe
-    return this.entities as Map<EntityId, Entity>;
   }
 
   private recordMutation(entityId: EntityId, changes: Record<string, any>): void {

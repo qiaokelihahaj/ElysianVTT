@@ -17,7 +17,6 @@ import { create } from 'zustand';
 import type {
   MapData,
   Entity,
-  Vector3D,
   ZoneTriggerDef,
 } from '@hard-vtt/shared';
 
@@ -109,8 +108,12 @@ interface ExploreState {
   entityVisibility: Record<string, EntityVisibility>;
 
   // --- Fog of War ---
-  /** Hex 级别的迷雾状态，key = "q,r" */
+  /** Hex 级别的迷雾状态，key = "q,r"（全局混合，保留向后兼容） */
   hexVisibility: Record<string, HexVisibility>;
+  /** 每个实体的可见 hex key 集合：entityId → Set<"q,r"> */
+  entityHexVisibility: Record<string, string[]>;
+  /** 当前视角实体 ID（以哪个实体的视野渲染迷雾） */
+  viewingEntityId: string | null;
 
   // --- Interaction ---
   /** 当前选中实体的 ID */
@@ -150,6 +153,12 @@ interface ExploreState {
   setHexExplored: (q: number, r: number) => void;
   setHexVisible: (q: number, r: number, visible: boolean) => void;
   setHexVisibilityBatch: (entries: Array<{ q: number; r: number; explored: boolean; visible: boolean }>) => void;
+  /** 设置每个实体的可见 hex 集合 */
+  setEntityHexVisibility: (entityId: string, hexKeys: string[]) => void;
+  /** 批量设置所有实体的可见 hex（来自 SCENE_SYNC） */
+  setAllEntityHexVisibility: (data: Record<string, string[]>) => void;
+  /** 设置当前视角实体 */
+  setViewingEntityId: (entityId: string | null) => void;
   clearFow: () => void;
 
   // Interaction
@@ -179,6 +188,8 @@ const INITIAL_STATE = {
   visibleEntityIds: [] as string[],
   entityVisibility: {} as Record<string, EntityVisibility>,
   hexVisibility: {} as Record<string, HexVisibility>,
+  entityHexVisibility: {} as Record<string, string[]>,
+  viewingEntityId: null as string | null,
   selectedEntityId: null as string | null,
   availableInteractions: [] as InteractionDef[],
   activeInteractionId: null as string | null,
@@ -211,7 +222,7 @@ export const useExploreStore = create<ExploreState>()((set) => ({
 
   // --- Entities ---
   setExploreEntities: (entities) =>
-    set((state) => {
+    set(() => {
       const map: Record<string, Entity> = {};
       for (const entity of entities) {
         map[entity.id] = entity;
@@ -229,7 +240,8 @@ export const useExploreStore = create<ExploreState>()((set) => ({
 
   removeExploreEntity: (entityId) =>
     set((state) => {
-      const { [entityId]: _removed, ...rest } = state.exploreEntities;
+      const rest = { ...state.exploreEntities };
+      delete rest[entityId];
       return { exploreEntities: rest };
     }),
 
@@ -319,7 +331,20 @@ export const useExploreStore = create<ExploreState>()((set) => ({
       return { hexVisibility: updated };
     }),
 
-  clearFow: () => set({ hexVisibility: {} }),
+  setEntityHexVisibility: (entityId, hexKeys) =>
+    set((state) => ({
+      entityHexVisibility: {
+        ...state.entityHexVisibility,
+        [entityId]: hexKeys,
+      },
+    })),
+
+  setAllEntityHexVisibility: (data) =>
+    set({ entityHexVisibility: data }),
+
+  setViewingEntityId: (entityId) => set({ viewingEntityId: entityId }),
+
+  clearFow: () => set({ hexVisibility: {}, entityHexVisibility: {} }),
 
   // --- Interaction ---
   setSelectedEntityId: (id) => set({ selectedEntityId: id }),

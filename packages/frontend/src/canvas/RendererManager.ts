@@ -1,5 +1,7 @@
+import { hexOffsetToPixel, pixelToHexOffset } from '@hard-vtt/shared';
 import { Application, Container, Graphics, Rectangle, Sprite, Text, TextStyle } from 'pixi.js';
 import { assetManager } from '../assets';
+import { IntentDispatcher } from '../network/IntentDispatcher';
 import { useGameStore } from '../store/gameStore';
 import { entityRenderStore, EntityRenderStore } from './EntityRenderStore';
 import { useExploreStore, type HexVisibility } from '../store/exploreStore';
@@ -24,45 +26,13 @@ function hexType(col: number): 0 | 1 {
  * Type 1（奇数 col）在 Type 0 基础上垂直偏移 halfHexH
  */
 function hexToPixel(col: number, row: number, size = HEX_SIZE): { x: number; y: number } {
-    const x = size * 1.5 * col;
-    // Type 1 偏移半个六边形高度
-    const yOffset = (col & 1) * (size * Math.sqrt(3) * 0.5);
-    const y = size * Math.sqrt(3) * row + yOffset;
-    return { x, y };
+    return hexOffsetToPixel(col, row, size);
 }
 
-/** 像素 → 分数轴向坐标（cube round 前） */
-function pixelToFractionalAxial(px: number, py: number, size = HEX_SIZE): { q: number; r: number; s: number } {
-    const q = (2 / 3 * px) / size;
-    const r = (-1 / 3 * px + Math.sqrt(3) / 3 * py) / size;
-    return { q, r, s: -q - r };
-}
-
-/** Cube round：分数 cube → 最近整数 cube */
-function cubeRound(q: number, r: number, s: number): { q: number; r: number; s: number } {
-    let rq = Math.round(q);
-    let rr = Math.round(r);
-    let rs = Math.round(s);
-    const dq = Math.abs(rq - q);
-    const dr = Math.abs(rr - r);
-    const ds = Math.abs(rs - s);
-    if (dq > dr && dq > ds) rq = -rr - rs;
-    else if (dr > ds) rr = -rq - rs;
-    else rs = -rq - rr;
-    return { q: rq, r: rr, s: rs };
-}
-
-/** 像素 → 最近六边形偏移坐标 (col, row) */
 function pixelToHex(px: number, py: number, size = HEX_SIZE): { col: number; row: number } {
-    const frac = pixelToFractionalAxial(px, py, size);
-    const rounded = cubeRound(frac.q, frac.r, frac.s);
-    // 轴向 (q, r) → 偏移 (col, row)：
-    // 偏移系统对奇数列有垂直偏移（Type 1），所以 row 需要修正
-    // 公式：col = q, row = r + floor(q / 2)
-    return { col: rounded.q, row: rounded.r + Math.floor(rounded.q / 2) };
+    return pixelToHexOffset(px, py, size);
 }
 
-/** 获取 flat-top 六边形 6 个角相对中心的偏移（角度步长 60°） */
 const HEX_CORNERS: { x: number; y: number }[] = (() => {
     const corners: { x: number; y: number }[] = [];
     for (let i = 0; i < 6; i++) {
@@ -103,6 +73,9 @@ export type RenderLayer = (typeof RenderLayer)[keyof typeof RenderLayer];
 export class RendererManager {
     private static instance: RendererManager;
     private app: Application | null = null;
+    private initializationId = 0;
+    private initializing = false;
+    private fxTimers = new Set<ReturnType<typeof setTimeout>>();
 
     public groundLayer = new Container();
     public gridLayer = new Container();
@@ -118,7 +91,9 @@ export class RendererManager {
     /** @deprecated 请使用 tokenLayer */
     public entityLayer = this.tokenLayer;
 
-    private entitySprites: Map<string, Graphics | Sprite> = new Map();
+    private entitySprites: Map<string, Container> = new Map();
+    /** 记录每个实体上次选中状态，避免每帧重绘 */
+    private lastSelectedState: Map<string, boolean> = new Map();
     private activeFloatingTexts: FloatingTextAnim[] = [];
     private phantomHero: Graphics | null = null;
 
@@ -135,8 +110,6 @@ export class RendererManager {
     private camDragStartY = 0;
     private hasDragged = false;
     private domAbort: AbortController | null = null;
-
-    private readonly DISPLAY_SCALE = HEX_SIZE;
 
     private unsubscribeStore: (() => void) | null = null;
     private unsubscribeFow: (() => void) | null = null;
@@ -164,12 +137,16 @@ export class RendererManager {
     }
 
     public async initialize(viewConfig: { canvas: HTMLCanvasElement; width: number; height: number }) {
-        if (this.app) return;
+        if (this.app || this.initializing) return;
+        const initializationId = ++this.initializationId;
+        this.initializing = true;
+        try {
 
         await assetManager.preload();
+        if (this.initializationId !== initializationId) return;
 
-        this.app = new Application();
-        await this.app.init({
+        const app = new Application();
+        await app.init({
             canvas: viewConfig.canvas,
             width: viewConfig.width,
             height: viewConfig.height,
@@ -178,6 +155,11 @@ export class RendererManager {
             autoDensity: true,
             resizeTo: window,
         });
+        if (this.initializationId !== initializationId) {
+            app.destroy({ removeView: true }, true);
+            return;
+        }
+        this.app = app;
         this.canvas = this.app.canvas as HTMLCanvasElement;
 
         const orderedLayers = [
@@ -214,7 +196,7 @@ export class RendererManager {
 
             if (state.uiState.mode === 'SELECT_MOVE_TARGET') {
                 state.setPendingMoveCoords({ x: hex.col, y: hex.row, z: 0 });
-            } else {
+            } else if (state.uiState.mode === 'IDLE') {
                 state.setSelectedEntityId(null);
             }
         });
@@ -297,9 +279,12 @@ export class RendererManager {
         this.fowLayer.addChild(this.fowGraphics);
         this.subscribeToFow();
 
-        this.app.ticker.add(() => {
-            this.update(this.app!.ticker.deltaTime);
+        app.ticker.add((ticker) => {
+            this.update(ticker.deltaTime);
         });
+        } finally {
+            if (this.initializationId === initializationId) this.initializing = false;
+        }
     }
 
     // ============================================================
@@ -375,30 +360,42 @@ export class RendererManager {
     }
 
     /**
-     * 订阅 exploreStore 的 hexVisibility 变化，自动重绘 FOW
-     * 仅在地图加载和迷雾状态变化时触发，不影响每帧性能
+     * 订阅 exploreStore 的 hexVisibility / entityHexVisibility / viewingEntityId 变化
+     * 仅在地图加载、迷雾状态变化、或切换视角实体时重绘
      */
     private subscribeToFow(): void {
         if (this.unsubscribeFow) this.unsubscribeFow();
 
         const redraw = () => {
-            const state = useExploreStore.getState();
-            if (!state.exploreMode || !state.mapData) {
-                // 非探索模式或无地图数据 → 清空迷雾
+            const exploreState = useExploreStore.getState();
+            const isGM = useGameStore.getState().permission.role === 'GM';
+            if (!exploreState.exploreMode || !exploreState.mapData) {
                 if (this.fowGraphics) this.fowGraphics.clear();
                 return;
             }
-            this.updateFow(state.hexVisibility, state.mapData.tiles);
+            this.updateFow(
+                exploreState.hexVisibility,
+                exploreState.entityHexVisibility,
+                exploreState.viewingEntityId,
+                exploreState.mapData.tiles,
+                isGM,
+            );
         };
 
         // 首次渲染
         redraw();
 
-        // 监听 hexVisibility 和 mapData 的变化
+        // 监听相关字段变化
         this.unsubscribeFow = useExploreStore.subscribe((state) => {
-            // 快速比较：仅当 hexVisibility, mapData, exploreMode 变更时重绘
+            const isGM = useGameStore.getState().permission.role === 'GM';
             if (state.exploreMode && state.mapData) {
-                this.updateFow(state.hexVisibility, state.mapData.tiles);
+                this.updateFow(
+                    state.hexVisibility,
+                    state.entityHexVisibility,
+                    state.viewingEntityId,
+                    state.mapData.tiles,
+                    isGM,
+                );
             } else if (this.fowGraphics) {
                 this.fowGraphics.clear();
             }
@@ -408,48 +405,70 @@ export class RendererManager {
     /**
      * 更新战争迷雾渲染
      *
-     * @param hexVisibility 轴向坐标 → 迷雾状态映射（key = "q,r"）
-     * @param tiles         地图瓦片列表（定义哪些 hex 需要渲染）
+     * 优先使用 viewingEntityId 对应实体的视野；
+     * 若未设置视角实体，退回使用全局 hexVisibility。
+     *
+     * @param hexVisibility        全局迷雾状态（key = "q,r"）
+     * @param entityHexVisibility 每个实体的可见 hex key 集合
+     * @param viewingEntityId     当前视角实体 ID
+     * @param tiles               地图瓦片列表
      */
     private updateFow(
         hexVisibility: Record<string, HexVisibility>,
+        entityHexVisibility: Record<string, string[]>,
+        viewingEntityId: string | null,
         tiles: TileDef[],
+        isGM: boolean = false,
     ): void {
         const g = this.fowGraphics;
         if (!g) return;
 
         g.clear();
 
+        // GM 未选中角色 → 不显示迷雾（全图可见）
+        if (isGM && !viewingEntityId) {
+            return;
+        }
+
+        // GM 选中角色 → 更轻的迷雾覆盖（仅示意），PL/OB → 正常迷雾
+        const unexploredAlpha = isGM ? 0.2 : 0.95;
+        const exploredAlpha = isGM ? 0.08 : 0.55;
+
+        // 确定当前视角的可见 hex 集合
+        const visibleHexKeys: Set<string> | null = viewingEntityId
+            ? new Set(entityHexVisibility[viewingEntityId] ?? [])
+            : null;
+
         for (const tile of tiles) {
             const { q, r } = tile.hex;
             const key = `${q},${r}`;
-            const fow = hexVisibility[key];
 
             // 转换为偏移坐标 → 像素
             const offset = this.axialToOffset(q, r);
             const pos = hexToPixel(offset.col, offset.row);
 
-            if (!fow) {
-                // 无状态 → 完全未探索：纯黑色不透明
+            // 判断该 hex 对当前视角的可见性
+            const isCurrentlyVisible = visibleHexKeys
+                ? visibleHexKeys.has(key)
+                : (hexVisibility[key]?.visible ?? false);
+
+            const isExplored = hexVisibility[key]?.explored ?? false;
+
+            if (!isExplored && !isCurrentlyVisible) {
+                // 从未探索
                 this.drawFowHexPath(g, pos.x, pos.y);
-                g.fill({ color: 0x000000, alpha: 0.95 });
+                g.fill({ color: 0x000000, alpha: unexploredAlpha });
                 continue;
             }
 
-            if (fow.visible) {
-                // 当前可见 → 不绘制迷雾覆盖（实体完全可见）
+            if (isCurrentlyVisible) {
+                // 当前可见 → 不绘制迷雾覆盖
                 continue;
             }
 
-            if (fow.explored) {
-                // 已探索但当前不可见 → 半透明暗色覆盖
-                this.drawFowHexPath(g, pos.x, pos.y);
-                g.fill({ color: 0x0a0a0a, alpha: 0.55 });
-            } else {
-                // 从未探索 → 纯黑色
-                this.drawFowHexPath(g, pos.x, pos.y);
-                g.fill({ color: 0x000000, alpha: 0.95 });
-            }
+            // 已探索但当前不可见
+            this.drawFowHexPath(g, pos.x, pos.y);
+            g.fill({ color: 0x0a0a0a, alpha: exploredAlpha });
         }
     }
 
@@ -464,35 +483,39 @@ export class RendererManager {
             const currentEntities = state.entities;
 
             // Sync entity removal
-            for (const [id, sprite] of this.entitySprites) {
+            for (const [id, container] of this.entitySprites) {
                 if (!currentEntities[id]) {
-                    this.tokenLayer.removeChild(sprite);
-                    sprite.destroy();
+                    this.tokenLayer.removeChild(container);
+                    container.destroy({ children: true });
                     this.entitySprites.delete(id);
+                    this.lastSelectedState.delete(id);
                     this.renderStore.unregisterEntity(id);
                 }
             }
 
             // Sync entity creation and updates
             for (const [id, entity] of Object.entries(currentEntities)) {
-                let sprite = this.entitySprites.get(id);
+                let container = this.entitySprites.get(id);
                 const isSelected = state.selectedEntityId === id;
+                const prevSelected = this.lastSelectedState.get(id);
 
-                if (!sprite) {
-                    sprite = this.createEntityDisplay(entity.type, entity.templateId, id, isSelected);
+                if (!container) {
+                    container = this.createEntityDisplay(entity.type, entity.templateId, id, isSelected);
                     const pos = hexToPixel(entity.transform.coords.x, entity.transform.coords.y);
-                    sprite.x = pos.x;
-                    sprite.y = pos.y;
-                    sprite.angle = entity.transform.facing;
+                    container.x = pos.x;
+                    container.y = pos.y;
+                    container.angle = entity.transform.facing ?? 0;
 
-                    this.entitySprites.set(id, sprite);
-                    this.tokenLayer.addChild(sprite);
+                    this.entitySprites.set(id, container);
+                    this.lastSelectedState.set(id, isSelected);
+                    this.tokenLayer.addChild(container);
 
-                    // 注册到 EntityRenderStore
-                    this.renderStore.registerEntity(id, pos.x, pos.y, entity.transform.facing);
+                    this.renderStore.registerEntity(id, pos.x, pos.y, entity.transform.facing ?? 0);
+                } else if (prevSelected !== isSelected) {
+                    // 仅在选中状态变化时重绘（避免每帧清除 Graphics）
+                    this.syncEntityDisplay(container, entity.type, entity.templateId, isSelected);
+                    this.lastSelectedState.set(id, isSelected);
                 }
-
-                this.syncEntityDisplay(sprite, entity.type, entity.templateId, isSelected);
             }
 
             // Sync ground cursor with camera mode
@@ -522,81 +545,114 @@ export class RendererManager {
 
     // ============================================================
     //  Entity display creation / sync
+    //  每个实体 = Container(angle=朝向) → [selectionRing, body, dirArrow]
+    //  方向箭头随 Container.angle 旋转，不随 body 重绘而丢失
     // ============================================================
 
-    private redrawEntitySprite(graphics: Graphics, type: string, templateId: string, isSelected: boolean) {
+    /** 子节点 name 常量，用于查找 */
+    private static readonly BODY_NAME = 'body';
+    private static readonly ARROW_NAME = 'arrow';
+    private static readonly RING_NAME = 'ring';
+
+    /**
+     * 重绘 body 图形和方向箭头（仅在选中状态变化时调用）
+     * Container.angle 由 update() 维护，此处不修改
+     */
+    private redrawEntityBody(container: Container, type: string, templateId: string, isSelected: boolean): void {
         const visual = assetManager.resolveEntityVisual(type as 'ACTOR' | 'PROP' | 'PROJECTILE', templateId);
-        graphics.clear();
+        const halfSize = visual.geometry.size / 2;
 
         const fillColor = isSelected ? visual.geometry.selectedFill : visual.geometry.fill;
         const strokeColor = isSelected ? visual.geometry.selectedStroke : visual.geometry.stroke;
         const strokeWidth = isSelected ? visual.geometry.selectedStrokeWidth : visual.geometry.strokeWidth;
 
-        if (visual.geometry.shape === 'circle') {
-            graphics.circle(0, 0, visual.geometry.size / 2);
-            graphics.fill(fillColor);
-            graphics.moveTo(0, 0);
-            graphics.lineTo(visual.geometry.size / 2, 0);
-            graphics.stroke({ width: strokeWidth, color: strokeColor });
-        } else if (visual.geometry.shape === 'rect') {
-            graphics.rect(-visual.geometry.size / 2, -visual.geometry.size / 2, visual.geometry.size, visual.geometry.size);
-            graphics.fill(fillColor);
-            graphics.stroke({ width: strokeWidth, color: strokeColor });
-        } else {
-            const halfSize = visual.geometry.size / 2;
-            graphics.poly([0, -halfSize, halfSize, 0, 0, halfSize, -halfSize, 0]);
-            graphics.fill(fillColor);
-            graphics.stroke({ width: strokeWidth, color: strokeColor });
+        // --- body ---
+        let body = container.getChildByName(RendererManager.BODY_NAME) as Graphics | Sprite | null;
+        if (!body) {
+            body = new Graphics();
+            body.label = RendererManager.BODY_NAME;
+            container.addChild(body);
+        }
+
+        if (body instanceof Graphics) {
+            body.clear();
+            if (visual.geometry.shape === 'circle') {
+                body.circle(0, 0, halfSize);
+                body.fill(fillColor);
+                body.stroke({ width: strokeWidth, color: strokeColor });
+            } else if (visual.geometry.shape === 'rect') {
+                body.rect(-halfSize, -halfSize, visual.geometry.size, visual.geometry.size);
+                body.fill(fillColor);
+                body.stroke({ width: strokeWidth, color: strokeColor });
+            } else {
+                body.poly([0, -halfSize, halfSize, 0, 0, halfSize, -halfSize, 0]);
+                body.fill(fillColor);
+                body.stroke({ width: strokeWidth, color: strokeColor });
+            }
+        }
+
+        // --- 方向箭头（独立 Graphics，指向正右方 angle=0） ---
+        let arrow = container.getChildByName(RendererManager.ARROW_NAME) as Graphics | null;
+        if (!arrow) {
+            arrow = new Graphics();
+            arrow.label = RendererManager.ARROW_NAME;
+            container.addChild(arrow);
+        }
+
+        arrow.clear();
+        const arrowLen = halfSize * 1.1;
+        const arrowW = halfSize * 0.45;
+        // 实心三角箭头，从边缘向外突出
+        arrow.poly([
+            halfSize + 2, 0,                        // 尖端
+            halfSize - arrowLen * 0.5, -arrowW,     // 上根
+            halfSize - arrowLen * 0.7, 0,            // 内凹
+            halfSize - arrowLen * 0.5, arrowW,       // 下根
+        ]);
+        arrow.fill({ color: 0xffcc00, alpha: 0.95 });
+        arrow.stroke({ width: 1, color: 0x000000, alpha: 0.5 });
+
+        // --- 选中环 ---
+        let ring = container.getChildByName(RendererManager.RING_NAME) as Graphics | null;
+        if (!ring) {
+            ring = new Graphics();
+            ring.label = RendererManager.RING_NAME;
+            container.addChild(ring);
+        }
+        ring.clear();
+        if (isSelected) {
+            ring.circle(0, 0, halfSize + 5);
+            ring.stroke({ width: 2.5, color: 0xfbbf24, alpha: 0.9 });
         }
     }
 
-    private createEntityDisplay(type: string, templateId: string, id: string, isSelected: boolean): Graphics | Sprite {
-        const visual = assetManager.resolveEntityVisual(type as 'ACTOR' | 'PROP' | 'PROJECTILE', templateId);
-
-        if (visual.imageUrl) {
-            const sprite = Sprite.from(visual.imageUrl);
-            sprite.anchor.set(0.5);
-            this.attachEntityInteraction(sprite, id);
-            this.syncEntitySpriteAppearance(sprite, visual, isSelected);
-            return sprite;
-        }
-
-        const graphics = new Graphics();
-        this.redrawEntitySprite(graphics, type, templateId, isSelected);
-        this.attachEntityInteraction(graphics, id);
-        return graphics;
-    }
-
-    private syncEntityDisplay(sprite: Graphics | Sprite, type: string, templateId: string, isSelected: boolean) {
-        if (sprite instanceof Sprite) {
-            const visual = assetManager.resolveEntityVisual(type as 'ACTOR' | 'PROP' | 'PROJECTILE', templateId);
-            this.syncEntitySpriteAppearance(sprite, visual, isSelected);
-            return;
-        }
-        this.redrawEntitySprite(sprite, type, templateId, isSelected);
-    }
-
-    private syncEntitySpriteAppearance(
-        sprite: Sprite,
-        visual: ReturnType<typeof assetManager.resolveEntityVisual>,
-        isSelected: boolean
-    ) {
-        sprite.tint = isSelected ? visual.geometry.selectedFill : visual.geometry.fill;
-        sprite.width = visual.geometry.size;
-        sprite.height = visual.geometry.size;
-        sprite.scale.set(isSelected ? 1.08 : 1);
-    }
-
-    private attachEntityInteraction(target: Graphics | Sprite, id: string) {
-        target.eventMode = 'static';
-        target.cursor = 'pointer';
-        target.on('pointerdown', (e) => {
+    /** 创建实体 Container（仅在实体首次出现时调用） */
+    private createEntityDisplay(type: string, templateId: string, id: string, isSelected: boolean): Container {
+        const container = new Container();
+        container.eventMode = 'static';
+        container.cursor = 'pointer';
+        container.on('pointerdown', (e) => {
             e.stopPropagation();
-            useGameStore.getState().setSelectedEntityId(id);
+            IntentDispatcher.selectEntityOrTarget(id);
             if (useGameStore.getState().centerOnEntity) {
                 this.centerOnEntity(id);
             }
         });
+
+        // 点击区域：透明大圆（比实体大，方便点击）
+        const hitArea = new Graphics();
+        hitArea.circle(0, 0, 30);
+        hitArea.fill({ color: 0xffffff, alpha: 0.001 });
+        hitArea.label = 'hitarea';
+        container.addChild(hitArea);
+
+        this.redrawEntityBody(container, type, templateId, isSelected);
+        return container;
+    }
+
+    /** 仅在选中状态变化时调用 */
+    private syncEntityDisplay(container: Container, type: string, templateId: string, isSelected: boolean): void {
+        this.redrawEntityBody(container, type, templateId, isSelected);
     }
 
     /**
@@ -627,25 +683,49 @@ export class RendererManager {
         const entities = state.entities;
         const movementTargets = state.movementTargets;
 
-        // 委托 EntityRenderStore 进行批量插值
+        // transform.coords 统一为偏移坐标，直接使用 hexToPixel
         this.renderStore.interpolateAll(entities, movementTargets, dt, hexToPixel);
 
+        // 探索模式：根据当前视角实体的 FOV 过滤实体可见性
+        const exploreState = useExploreStore.getState();
+        const exploreMode = exploreState.exploreMode;
+        const viewingEntityId = exploreState.viewingEntityId;
+        const entityHexVis = exploreState.entityHexVisibility;
+        const isGM = state.permission.role === 'GM';
+        const visibleHexKeys: Set<string> | null = (exploreMode && viewingEntityId)
+            ? new Set(entityHexVis[viewingEntityId] ?? [])
+            : null;
+        // GM 模式下不可见实体的透明度（仍然清晰可见，仅示意）
+        const gmLimitedAlpha = 0.55;
+
         // 从 renderStore 读取插值结果应用到 sprite
-        for (const [id, sprite] of this.entitySprites) {
+        for (const [id, container] of this.entitySprites) {
             const renderState = this.renderStore.getRenderState(id);
             if (!renderState) continue;
 
             if (!renderState.visible) {
-                sprite.visible = false;
+                container.visible = false;
                 continue;
             }
-            sprite.visible = true;
-            sprite.x = renderState.x;
-            sprite.y = renderState.y;
-            sprite.angle = renderState.angle;
-            sprite.alpha = renderState.alpha;
-            if (sprite instanceof Sprite) {
-                sprite.scale.set(renderState.scale);
+            container.visible = true;
+            container.x = renderState.x;
+            container.y = renderState.y;
+            container.angle = renderState.angle;
+            container.alpha = renderState.alpha;
+
+            // 探索模式 FOV 实体可见性
+            if (visibleHexKeys && id !== viewingEntityId) {
+                const entity = entities[id];
+                if (entity) {
+                    const col = entity.transform.coords.x;
+                    const row = entity.transform.coords.y;
+                    const q = Math.round(col);
+                    const r = Math.round(row - Math.floor(col / 2));
+                    const key = `${q},${r}`;
+                    if (!visibleHexKeys.has(key)) {
+                        container.alpha = isGM ? gmLimitedAlpha : 0.2;
+                    }
+                }
             }
         }
 
@@ -675,6 +755,7 @@ export class RendererManager {
     // ============================================================
 
     public handleVisualFx(payload: VisualEventPayload) {
+        if (!this.app) return;
         payload.events.forEach(evt => {
             const fxVisual = assetManager.resolveVisualFx(evt.fxTemplateId);
 
@@ -695,14 +776,7 @@ export class RendererManager {
                     evt.durationMs || 2000,
                     fxVisual.floatingTextColor
                 );
-                const flash = new Graphics();
-                flash.rect(0, 0, window.innerWidth, window.innerHeight);
-                flash.fill({ color: fxVisual.flashColor, alpha: 0.1 });
-                this.fxLayer.addChild(flash);
-                setTimeout(() => {
-                    this.fxLayer.removeChild(flash);
-                    flash.destroy();
-                }, 200);
+                this.spawnFlash(fxVisual.flashColor, 0.1, 200);
                 return;
             }
 
@@ -723,14 +797,7 @@ export class RendererManager {
                     1500,
                     0xcc44ff
                 );
-                const flash = new Graphics();
-                flash.rect(0, 0, window.innerWidth, window.innerHeight);
-                flash.fill({ color: 0xcc33ff, alpha: 0.08 });
-                this.fxLayer.addChild(flash);
-                setTimeout(() => {
-                    this.fxLayer.removeChild(flash);
-                    flash.destroy();
-                }, 150);
+                this.spawnFlash(0xcc33ff, 0.08, 150);
                 return;
             }
 
@@ -751,6 +818,18 @@ export class RendererManager {
                 this.spawnFloatingText(evt.text, startX, startY, evt.durationMs || 1000, color);
             }
         });
+    }
+
+    private spawnFlash(color: number, alpha: number, duration: number) {
+        const flash = new Graphics();
+        flash.rect(0, 0, window.innerWidth, window.innerHeight);
+        flash.fill({ color, alpha });
+        this.fxLayer.addChild(flash);
+        const timer = setTimeout(() => {
+            this.fxTimers.delete(timer);
+            if (!flash.destroyed) flash.destroy();
+        }, duration);
+        this.fxTimers.add(timer);
     }
 
     private spawnFloatingText(text: string, x: number, y: number, duration: number, color: number) {
@@ -775,6 +854,10 @@ export class RendererManager {
     }
 
     public destroy() {
+        this.initializationId += 1;
+        this.initializing = false;
+        for (const timer of this.fxTimers) clearTimeout(timer);
+        this.fxTimers.clear();
         if (this.domAbort) {
             this.domAbort.abort();
             this.domAbort = null;
@@ -796,14 +879,28 @@ export class RendererManager {
             this.app = null;
         }
         this.entitySprites.clear();
+        this.lastSelectedState.clear();
+        this.activeFloatingTexts = [];
         this.renderStore.clear();
         this.fowGraphics = null;
-        for (const layer of [
-            this.groundLayer, this.gridLayer, this.objectLayer,
-            this.tokenLayer, this.gmLayer, this.fowLayer, this.previewLayer,
-            this.fxLayer, this.lightingLayer,
-        ]) {
-            layer.removeChildren();
-        }
+        this.phantomHero = null;
+        this.canvas = null;
+        if (!this.cameraContainer.destroyed) this.cameraContainer.destroy({ children: true });
+        this.cameraContainer = new Container();
+        this.groundLayer = new Container();
+        this.gridLayer = new Container();
+        this.objectLayer = new Container();
+        this.tokenLayer = new Container();
+        this.gmLayer = new Container();
+        this.fowLayer = new Container();
+        this.previewLayer = new Container();
+        this.fxLayer = new Container();
+        this.lightingLayer = new Container();
+        this.mapLayer = this.groundLayer;
+        this.entityLayer = this.tokenLayer;
+        this.cameraX = 0;
+        this.cameraY = 0;
+        this.zoom = 1;
+        this.isPointerDown = false;
     }
 }

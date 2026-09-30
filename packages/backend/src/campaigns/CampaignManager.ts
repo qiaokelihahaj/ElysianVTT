@@ -1,6 +1,9 @@
 // packages/backend/src/campaigns/CampaignManager.ts
+import type { IEngineInstance } from '@hard-vtt/shared';
 import { CombatEngine } from './engines/CombatEngine.js';
+import { ExploreEngine } from './engines/ExploreEngine.js';
 import { CharacterSheetRepository } from '../db/CharacterSheetRepository.js';
+import { testArenaMap } from '../db/maps/test_arena.js';
 import { Scene, SceneState } from './Scene.js';
 import { StateBroadcaster } from '../network/StateBroadcaster.js';
 import { Logger } from '../utils/Logger.js';
@@ -27,18 +30,30 @@ export class CampaignManager {
         return scene;
     }
 
-    async getOrCreateEngine(sceneId: string): Promise<CombatEngine> {
+    async getOrCreateEngine(sceneId: string): Promise<IEngineInstance> {
         const scene = this.getOrCreateScene(sceneId);
 
-        if (scene.currentState === SceneState.ACTIVE && scene.activeCombatEngine) {
-            return scene.activeCombatEngine;
+        if ((scene.currentState === SceneState.ACTIVE || scene.currentState === SceneState.PAUSED) && scene.activeEngine) {
+            return scene.activeEngine;
         }
 
         await scene.startLoading();
 
-        const newEngine = new CombatEngine(sceneId);
+        const isExplore = sceneId.startsWith('explore_');
+        const newEngine: IEngineInstance = isExplore
+            ? new ExploreEngine(sceneId)
+            : new CombatEngine(sceneId);
 
-        const entitiesToMount = await CharacterSheetRepository.findBySceneId(sceneId);
+        // 探索模式：先加载地图数据（FOW 初始化需要地图）
+        if (isExplore && newEngine instanceof ExploreEngine) {
+            newEngine.loadMap(testArenaMap);
+            logger.info(`Map '${testArenaMap.name}' loaded for explore scene ${sceneId}`, null, { sceneId });
+        }
+
+        // 探索模式加载所有角色卡（方便测试），战斗模式按场景过滤
+        const entitiesToMount = isExplore
+            ? await CharacterSheetRepository.findAll()
+            : await CharacterSheetRepository.findBySceneId(sceneId);
 
         if (entitiesToMount.length > 0) {
             newEngine.mountEntities(entitiesToMount);
@@ -60,9 +75,9 @@ export class CampaignManager {
         return scene;
     }
 
-    async getEngine(sceneId: string): Promise<CombatEngine | undefined> {
+    async getEngine(sceneId: string): Promise<IEngineInstance | undefined> {
         const scene = this.getScene(sceneId);
-        return scene?.activeCombatEngine ?? undefined;
+        return scene?.activeEngine ?? undefined;
     }
 
     async destroyScene(sceneId: string): Promise<void> {

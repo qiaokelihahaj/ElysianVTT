@@ -4,8 +4,7 @@ import type {
     TrajectoryType, CollisionRoll, CollisionResult, BodyPart
 } from '@hard-vtt/shared';
 import { VectorMath } from '../../utils/VectorMath.js';
-
-const BODY_PARTS: BodyPart[] = ['HEAD', 'TORSO', 'LEFT_ARM', 'RIGHT_ARM', 'LEFT_LEG', 'RIGHT_LEG'];
+import { SpatialSystem } from '../systems/SpatialSystem.js';
 
 /**
  * 弹道实体类
@@ -70,7 +69,8 @@ export class Projectile extends BaseEntity {
         this.speed = params.speed ?? 1.0;
 
         this.waypoints = [];
-        this.currentWaypointIndex = 0;
+        // Generated paths omit the launch point; no waypoint has been reached yet.
+        this.currentWaypointIndex = -1;
 
         this.maxHeight = params.maxHeight ?? 0;
         this.minRange = params.minRange ?? 0;
@@ -87,46 +87,18 @@ export class Projectile extends BaseEntity {
 
     /** 设置直射弹道路径 */
     public setLinearPath(from: Vector3D, to: Vector3D, stepSize: number): void {
-        this.waypoints = [];
-        const groundZ = from.z ?? 0;
-        let cursor = { ...from };
-
-        while (VectorMath.distance(cursor, to) > stepSize * 0.1) {
-            cursor = VectorMath.stepTowards(cursor, to, stepSize);
-            this.waypoints.push({ x: cursor.x, y: cursor.y, z: groundZ });
-        }
-
-        // 确保终点包含
-        const lastDist = this.waypoints.length > 0
-            ? VectorMath.distance(this.waypoints[this.waypoints.length - 1], to)
-            : Infinity;
-        if (lastDist > 0.01) {
-            this.waypoints.push({ ...to, z: groundZ });
-        }
-
-        this.currentWaypointIndex = 0;
+        this.waypoints = SpatialSystem.planProjectilePath(from, to, 'LINEAR', stepSize);
+        this.transform.coords = { ...from };
+        this.currentWaypointIndex = -1;
         this.trajectoryType = 'LINEAR';
     }
 
     /** 设置抛物线弹道路径 */
     public setParabolicPath(from: Vector3D, to: Vector3D, stepSize: number, maxHeight: number): void {
-        this.waypoints = [];
-        const totalDist = VectorMath.distance(from, to);
-        const steps = Math.max(2, Math.ceil(totalDist / stepSize));
-        const fromZ = from.z ?? 0;
-        const toZ = to.z ?? 0;
-
-        for (let i = 1; i <= steps; i++) {
-            const t = i / steps;
-            const x = from.x + (to.x - from.x) * t;
-            const y = from.y + (to.y - from.y) * t;
-            const baseZ = fromZ + (toZ - fromZ) * t;
-            const arcOffset = 4 * maxHeight * t * (1 - t);
-            this.waypoints.push({ x, y, z: baseZ + arcOffset });
-        }
-
+        this.waypoints = SpatialSystem.planProjectilePath(from, to, 'PARABOLIC', stepSize, { maxHeight });
+        this.transform.coords = { ...from };
         this.maxHeight = maxHeight;
-        this.currentWaypointIndex = 0;
+        this.currentWaypointIndex = -1;
         this.trajectoryType = 'PARABOLIC';
     }
 

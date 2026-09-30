@@ -198,6 +198,8 @@ export class PermissionService {
             case 'MICRO_EVADE':
             case 'PRIORITY_TOGGLE':
             case 'HOOK_PRESET':
+            case 'CHANGE_STANCE':
+            case 'ROTATE':
                 // 这些类型的意图仅需 entity 控制权检查（已在上面完成）
                 break;
             default:

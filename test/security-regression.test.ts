@@ -49,8 +49,10 @@ function printHeader(title: string): void {
 
 (async () => {
     let server: http.Server | undefined;
+    const previousDevLogin = process.env.ELYSIAN_ENABLE_DEV_LOGIN;
 
     try {
+        process.env.ELYSIAN_ENABLE_DEV_LOGIN = '1';
         const started = await startServer();
         server = started.server;
         const baseUrl = started.baseUrl;
@@ -142,6 +144,8 @@ function printHeader(title: string): void {
         console.error('\n安全回归测试失败:', error);
         process.exitCode = 1;
     } finally {
+        if (previousDevLogin === undefined) delete process.env.ELYSIAN_ENABLE_DEV_LOGIN;
+        else process.env.ELYSIAN_ENABLE_DEV_LOGIN = previousDevLogin;
         if (server) {
             await new Promise<void>((resolve) => server!.close(() => resolve()));
         }

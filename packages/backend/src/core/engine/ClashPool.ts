@@ -6,8 +6,11 @@ import type {
 import { LogVisibility } from '@hard-vtt/shared';
 import { RuleEvaluator } from '../systems/RuleEvaluator.js';
 import { EffectSystem } from '../systems/EffectSystem.js';
-import { Dictionary } from '../../db/Dictionary.js';
+import { DictionaryActionCatalog } from '../../db/Dictionary.js';
+import type { ActionCatalog } from '../../rules/ActionCatalog.js';
 import { Logger } from '../../utils/Logger.js';
+import { VectorMath } from '../../utils/VectorMath.js';
+import { SpatialActionSystem } from '../systems/SpatialActionSystem.js';
 
 const logger = Logger.create('Engine:ClashPool');
 
@@ -38,6 +41,16 @@ export interface ClashResult {
     deaths: ClashDeath[];
     mutualKillPairs: Array<[EntityId, EntityId]>;
     newRecoveryEvents: ActionExecutionEvent[];
+    /** Events cancelled by a higher-priority interrupt before their ACTIVE frame. */
+    cancelledEventIds?: string[];
+    /** Interrupt effects are committed only after the whole priority group snapshots. */
+    interruptedEntityIds?: EntityId[];
+    /**
+     * Targets admitted by each action's range envelope in the immutable
+     * group snapshot.  CombatEngine uses this to seed the per-strike ACTIVE
+     * ledger without exposing packet/order dependent target state.
+     */
+    appliedTargetIds?: Record<string, EntityId[]>;
 }
 
 export class ClashPool {
@@ -54,18 +67,22 @@ export class ClashPool {
         events: ActionExecutionEvent[],
         entities: Map<EntityId, Entity>,
         currentTick: Tick,
-        tolerance: number = 2.0,
-        onInterrupt?: (target: Entity) => void
+        tolerance: number = 0,
+        onInterrupt?: (target: Entity) => void,
+        actionCatalog: ActionCatalog = new DictionaryActionCatalog(),
     ): ClashResult {
         const result: ClashResult = {
             mutations: [],
             deaths: [],
             mutualKillPairs: [],
-            newRecoveryEvents: []
+            newRecoveryEvents: [],
+            cancelledEventIds: [],
+            interruptedEntityIds: [],
+            appliedTargetIds: {}
         };
 
         // ==== Step 1: Evaluate & Decorate ====
-        const decorated = ClashPool.decorateEvents(events, entities, currentTick);
+        const decorated = ClashPool.decorateEvents(events, entities, currentTick, actionCatalog);
         if (decorated.length === 0) return result;
 
         // ==== Step 2: Group & Sort ====
@@ -73,7 +90,19 @@ export class ClashPool {
 
         // ==== Step 3 & 4: Resolve by group, highest priority first ====
         for (const group of groups) {
-            ClashPool.resolveGroup(group, entities, currentTick, result, onInterrupt);
+            // A higher-priority group may cancel a lower-priority STARTUP event.
+            // Same-priority events remain simultaneous and are never filtered by
+            // an interrupt produced by a sibling in this batch.
+            const activeEvents = group.events.filter(ce => !result.cancelledEventIds?.includes(ce.event.eventId));
+            if (activeEvents.length === 0) continue;
+            ClashPool.resolveGroup(
+                { ...group, events: activeEvents },
+                entities,
+                currentTick,
+                result,
+                onInterrupt,
+                actionCatalog,
+            );
         }
 
         return result;
@@ -85,7 +114,8 @@ export class ClashPool {
     private static decorateEvents(
         events: ActionExecutionEvent[],
         entities: Map<EntityId, Entity>,
-        currentTick: Tick
+        currentTick: Tick,
+        actionCatalog: ActionCatalog,
     ): ClashEvent[] {
         const decorated: ClashEvent[] = [];
 
@@ -93,12 +123,12 @@ export class ClashPool {
             const actor = entities.get(evt.actorId);
             if (!actor) continue;
 
-            const template = Dictionary.getAction(evt.actionTemplateId);
+            const template = actionCatalog.getAction(evt.actionTemplateId);
             if (!template) continue;
 
             // 动态求值优先级表达式
-            let calculatedPriority = 0;
-            if (template.priorityExpr) {
+            let calculatedPriority = evt.priorityOverride ?? 0;
+            if (evt.priorityOverride === undefined && template.priorityExpr) {
                 try {
                     const targets = (evt.targetIds || []).map(id => entities.get(id)).filter(e => e) as Entity[];
                     const primaryTarget = targets[0];
@@ -168,28 +198,37 @@ export class ClashPool {
         entities: Map<EntityId, Entity>,
         currentTick: Tick,
         result: ClashResult,
-        onInterrupt?: (target: Entity) => void
+        onInterrupt: ((target: Entity) => void) | undefined,
+        actionCatalog: ActionCatalog,
     ): void {
         const isMutual = group.events.length >= 2;
 
         // 收集组内所有涉及的实体 ID
         const involvedIds = new Set<EntityId>();
-        const actorIds: EntityId[] = [];
-
+        // Area effects, blast shadows and guardians can mutate undeclared
+        // entities. Every event uses a private copy of the whole battlefield.
+        for (const id of entities.keys()) involvedIds.add(id);
         for (const ce of group.events) {
             involvedIds.add(ce.event.actorId);
-            actorIds.push(ce.event.actorId);
             if (ce.event.targetIds) {
                 ce.event.targetIds.forEach(id => involvedIds.add(id));
             }
         }
 
-        // ==== Phase 1: 创建快照 + 预计算（不修改真实内存）====
-        const snapshot = ClashPool.createSnapshot(entities, involvedIds);
+        // ==== Phase 1: independent deep snapshots + pure pre-calculation ====
+        // Every event sees exactly the same group-start state.  Running the
+        // effects on one shared snapshot would make the result depend on the
+        // order in which packets happened to be inserted into the heap.
+        const baseline = ClashPool.createSnapshot(entities, involvedIds);
         const pendingDiffs = new Map<EntityId, Record<string, any>>();
         const phase1Deaths = new Map<EntityId, string[]>();
+        const pendingDeltas = new Map<EntityId, Record<string, number>>();
+        const pendingValues = new Map<EntityId, Record<string, any>>();
+        const interruptTargets = new Set<EntityId>();
+        const allowNegativeResources = ClashPool.findSustainResources(baseline, actionCatalog);
 
         for (const ce of group.events) {
+            const snapshot = ClashPool.createSnapshot(baseline, involvedIds);
             const actor = snapshot.get(ce.event.actorId);
             if (!actor) continue;
 
@@ -197,25 +236,121 @@ export class ClashPool {
                 .map(id => snapshot.get(id))
                 .filter(e => e) as Entity[];
 
-            // 在快照上运行 EffectSystem
-            const mutations = EffectSystem.applyAction(ce.template, actor, targets, { tick: currentTick }, onInterrupt);
+            // Range is evaluated against the same immutable group snapshot as
+            // the effects.  This keeps a same-Tick clash deterministic and
+            // prevents a target that left the ACTIVE envelope from receiving
+            // an effect merely because its id was declared earlier.
+            // Explicit event-driven windows use the same strict envelope as
+            // the single-event resolver and the preview endpoint.  Legacy
+            // clash events retain the historical 0.1 tolerance for wire
+            // compatibility with older templates.
+            const strictRange = ce.event.activeWindowStart !== undefined
+                || ce.event.activeWindowEnd !== undefined
+                || ce.event.positionTriggered === true;
+            const inRangeTargets = targets.filter(target =>
+                ClashPool.isTargetInRange(ce.template, actor, target, strictRange)
+            );
+            result.appliedTargetIds![ce.event.eventId] = inRangeTargets.map(target => target.id);
 
-            // 记录差分
+            // Do not invoke callbacks while calculating.  A callback can mutate
+            // real state and would violate the two-phase contract.
+            // A position-triggered event is a recheck for newly eligible
+            // external targets.  SELF effects belong to the original
+            // declaration and must not be repeated when another target walks
+            // into the same window.
+            const effectTemplate = ce.event.positionTriggered
+                ? {
+                    ...ce.template,
+                    effects: ce.template.effects.filter(effect => effect.targetSelector !== 'SELF')
+                }
+                : ce.template;
+            const launchTemplate = ce.template.launchProjectile ? {
+                ...effectTemplate, effects: effectTemplate.effects.filter(effect => effect.targetSelector === 'SELF'),
+            } : effectTemplate;
+            const mutations = EffectSystem.applyAction(launchTemplate, actor, inRangeTargets, {
+                tick: currentTick,
+                entities: snapshot,
+                originCoords: ce.event.targetCoords,
+                applySpatial: !ce.event.positionTriggered,
+                actionCatalog,
+                allowNegativeResources: [...allowNegativeResources],
+            }, target => interruptTargets.add(target.id));
+
+            // Aggregate numeric changes as deltas from the common baseline so
+            // two same-tick attacks on one target do not overwrite each other.
             for (const [entityId, changes] of mutations.entries()) {
-                const existing = pendingDiffs.get(entityId) || {};
-                pendingDiffs.set(entityId, { ...existing, ...changes });
+                const targetDeltas = pendingDeltas.get(entityId) ?? {};
+                const targetValues = pendingValues.get(entityId) ?? {};
+                const original = baseline.get(entityId);
+                for (const [key, value] of Object.entries(changes)) {
+                    const baselineValue = original ? ClashPool.getNestedValue(original, key) : undefined;
+                    if (typeof value === 'number' && typeof baselineValue === 'number') {
+                        targetDeltas[key] = (targetDeltas[key] ?? 0) + (value - baselineValue);
+                    } else {
+                        targetValues[key] = value;
+                    }
+                }
+                pendingDeltas.set(entityId, targetDeltas);
+                pendingValues.set(entityId, targetValues);
+            }
+
+            // INTERRUPT is recorded as intent and applied after all effects in
+            // this priority group have committed.  Only targets that pass the
+            // same range check can be interrupted; SELF remains exactly one
+            // actor target even when the event carries no targetIds.
+            for (const effect of effectTemplate.effects) {
+                if (effect.type !== 'INTERRUPT') continue;
+                if (effect.targetSelector === 'SELF') {
+                    interruptTargets.add(ce.event.actorId);
+                } else if (effect.targetSelector === 'PRIMARY') {
+                    for (const target of inRangeTargets) interruptTargets.add(target.id);
+                } else {
+                    // ALL_IN_AOE is resolved by EffectSystem from the pure
+                    // snapshot.  Keep the conservative declared target set
+                    // but still require the action envelope to contain it.
+                    for (const target of inRangeTargets) interruptTargets.add(target.id);
+                }
             }
         }
 
-        // 检查快照中的死亡（HP/poise降到0）
-        for (const [id, snapshotEntity] of snapshot) {
+        // Build the final simulated state for death checks and mutations.
+        const finalSnapshot = ClashPool.createSnapshot(baseline, involvedIds);
+        for (const [entityId, deltas] of pendingDeltas) {
+            const entity = finalSnapshot.get(entityId);
+            if (!entity) continue;
+            const changes = pendingValues.get(entityId) ?? {};
+            for (const [key, delta] of Object.entries(deltas)) {
+                const startValue = ClashPool.getNestedValue(entity, key);
+                const maxValue = key.startsWith('resources.current.')
+                    ? entity.resources.max[key.slice('resources.current.'.length)]
+                    : undefined;
+                const next = typeof startValue === 'number' ? startValue + delta : delta;
+                const resourceKey = key.startsWith('resources.current.')
+                    ? key.slice('resources.current.'.length)
+                    : undefined;
+                const min = resourceKey && allowNegativeResources.has(resourceKey) && resourceKey !== 'hp'
+                    ? Number.NEGATIVE_INFINITY
+                    : 0;
+                changes[key] = resourceKey && typeof maxValue === 'number'
+                    ? Math.max(min, Math.min(maxValue, next))
+                    : resourceKey ? Math.max(min, next) : next;
+                ClashPool.setNestedValue(entity, key, changes[key]);
+            }
+            pendingValues.set(entityId, changes);
+        }
+        for (const [entityId, changes] of pendingValues) {
+            if (Object.keys(changes).length > 0) pendingDiffs.set(entityId, changes);
+        }
+
+        // Check the final simulated state (HP/poise <= 0).
+        for (const [id, snapshotEntity] of finalSnapshot) {
             const hp = snapshotEntity.resources.current['hp'] ?? 999;
             const poise = snapshotEntity.resources.current['poise'] ?? 999;
-            if (hp <= 0 || poise <= 0) {
+            if (hp <= 0 && (baseline.get(id)?.resources.current.hp ?? 1) > 0) {
                 // 找出哪些actor在这个group中对它造成了伤害
                 const killers: string[] = [];
                 for (const ce of group.events) {
-                    if (ce.event.targetIds?.includes(id)) {
+                    if (result.appliedTargetIds?.[ce.event.eventId]?.includes(id)) {
                         killers.push(ce.event.actorId);
                     }
                 }
@@ -250,6 +385,19 @@ export class ClashPool {
             });
         }
 
+        // Interrupts are intentionally delayed until after the group commit.
+        // ACTIVE actions are already irreversible; only a pending event whose
+        // actor is still in STARTUP/DELAY/CHANNELING can be cancelled.
+        for (const targetId of interruptTargets) {
+            const target = entities.get(targetId);
+            if (!target || target.currentActionContext?.phase === 'ACTIVE') continue;
+            if (target.currentActionContext?.actionId) {
+                result.cancelledEventIds?.push(target.currentActionContext.actionId);
+            }
+            result.interruptedEntityIds?.push(targetId);
+            onInterrupt?.(target);
+        }
+
         // 检查是否发生了相杀（组内双方互相死亡）
         if (isMutual && group.events.length === 2) {
             const a0 = group.events[0];
@@ -272,14 +420,11 @@ export class ClashPool {
         for (const id of involvedIds) {
             const original = entities.get(id);
             if (!original) continue;
-
-            snapshot.set(id, {
-                ...original,
-                resources: {
-                    current: { ...original.resources.current },
-                    max: { ...original.resources.max }
-                }
-            });
+            // Effects such as a guard append/consume entries in
+            // activeEffects during pure phase-one evaluation.  Clone the
+            // whole entity so that those writes cannot leak into the real
+            // entity (or into a sibling same-priority event's snapshot).
+            snapshot.set(id, structuredClone(original));
         }
         return snapshot;
     }
@@ -294,5 +439,46 @@ export class ClashPool {
             current = current[keys[i]];
         }
         current[keys[keys.length - 1]] = value;
+    }
+
+    private static getNestedValue(obj: any, path: string): any {
+        return path.split('.').reduce((current, key) => current === undefined || current === null ? undefined : current[key], obj);
+    }
+
+    private static findSustainResources(entities: Map<EntityId, Entity>, actionCatalog: ActionCatalog): Set<string> {
+        const resources = new Set<string>();
+        for (const entity of entities.values()) {
+            const context = entity.currentActionContext;
+            if (!context || (context.phase !== 'STARTUP' && context.phase !== 'CHANNELING')) continue;
+            const template = context.actionTemplateId ? actionCatalog.getAction(context.actionTemplateId) : undefined;
+            for (const key of template?.sustainResources ?? []) resources.add(key);
+        }
+        return resources;
+    }
+
+    /**
+     * Shared range predicate for clash resolution.  `range` expressions are
+     * evaluated once per actor snapshot and never sampled from a client.
+     * SELF effects do not require a target and therefore are not filtered by
+     * this helper.
+     */
+    private static isTargetInRange(
+        template: ActionTemplate,
+        actor: Entity,
+        target: Entity,
+        strict = false,
+    ): boolean {
+        if (template.range?.type === 'SELF') return target.id === actor.id;
+        const expression = template.range?.distanceExpr;
+        if (!expression) return true;
+        try {
+            const maxRange = Math.abs(RuleEvaluator.evaluate(expression, { actor }).total);
+            const tolerance = strict ? 0 : 0.1;
+            return SpatialActionSystem.inReach(template, actor, target, maxRange + tolerance);
+        } catch {
+            // A malformed rule must fail closed for an external target while
+            // leaving legacy SELF effects usable.
+            return false;
+        }
     }
 }

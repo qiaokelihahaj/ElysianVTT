@@ -1,0 +1,53 @@
+.tactical-clock.demo-timeline-panel { display: flex; flex-direction: column; min-height: 0; height: 100%; padding: 10px; gap: 7px; }
+.workspace-window[data-panel="timeline"] .workspace-window-body { display: flex; padding-bottom: 0; overflow: hidden; }
+.workspace-window[data-panel="timeline"] .workspace-window-body[hidden] { display: none; }
+.workspace-window[data-panel="timeline"] .tactical-clock { width: 100%; padding: 10px; }
+.tactical-clock .demo-timeline-header { flex-shrink: 0; display: flex; align-items: center; flex-wrap: nowrap; gap: 12px; margin: 0; }
+.timeline-clock { min-width: 60px; display: grid; justify-items: center; padding: 3px 10px; border-right: 1px solid #c6a76a40; }
+.timeline-clock small { color: #a6a18e; font-size: 8px; letter-spacing: .08em; }
+.timeline-clock strong { color: #f3d795; font: 600 23px/1.1 ui-monospace, monospace; }
+.timeline-summary { flex: 1; min-width: 0; }
+.tactical-clock .timeline-summary h2 { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #d7e3e8; font-size: 11px; font-weight: 500; }
+.tactical-clock .demo-timeline-subtitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; line-height: 1.4; color: #9aafbb; }
+.tactical-clock .demo-timeline-tools { flex-shrink: 0; flex-wrap: nowrap; gap: 4px; }
+.timeline-color-keys { display: inline-flex; align-items: center; gap: 4px; margin-right: 6px; }
+.timeline-color-keys i { display: block; width: 9px; height: 6px; border-radius: 2px; }
+.timeline-color-keys .startup { background: #147d68; }
+.timeline-color-keys .small-startup { background: #806e2f; }
+.timeline-color-keys .active { background: #c84d55; }
+.timeline-color-keys .recovery { background: #315da2; }
+.timeline-color-keys .result { width: 3px; height: 9px; background: var(--demo-amber); border-radius: 1px; }
+.tactical-clock .demo-timeline-tools .demo-button { min-height: 26px; padding: 4px 7px; }
+.tactical-clock .demo-timeline-zoom { border: 0; font-size: 10px; padding: 0 2px; }
+.tactical-clock .demo-timeline-scroll { flex: 1; min-height: 64px; max-height: none; border-color: #334b5b; border-radius: 6px; scrollbar-width: thin; }
+.tactical-clock .demo-timeline-ruler-label { justify-content: space-between; padding-right: 8px; color: #b6c5cd; }
+.tactical-clock .demo-timeline-ruler-label > span { font-size: 8px; color: #6b8595; }
+.tactical-clock .demo-timeline-ruler-track > span { color: #9aafbb; font-size: 10px; }
+.tactical-clock .demo-timeline-ruler-track > span i { height: 6px; }
+.tactical-clock .demo-timeline-ruler-track > span.is-current { color: #f1d090; }
+.tactical-clock .demo-timeline-ruler-track > span.is-current i { height: 7px; }
+.tactical-clock .demo-timeline-lane-label { border-left-width: 2px; padding-left: 10px; background: #101e2a; }
+.tactical-clock .demo-timeline-lane-label strong { font-size: 11px; }
+.tactical-clock .demo-timeline-track { background-image: linear-gradient(to right, #839dac12 1px, transparent 1px); }
+.tactical-clock .demo-timeline-lane:nth-child(even) { background: #273f4b17; }
+.tactical-clock .demo-timeline-action, .tactical-clock .demo-timeline-unknown { height: 36px; border-color: #577182; border-radius: 4px; }
+.tactical-clock .demo-timeline-action-name { top: 0; left: 2px; font-size: 10px; max-width: calc(100% - 48px); background: none; }
+.tactical-clock .demo-timeline-action-meta { top: 3px; bottom: auto; right: 4px; font-size: 8px; max-width: 44px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tactical-clock .demo-timeline-segments { top: 17px; border-radius: 0 0 3px 3px; }
+.tactical-clock .timeline-segment b { font-size: 9px; font-weight: 500; }
+.tactical-clock .timeline-result-marker { top: 17px; height: 17px; padding: 0; font-size: 0; box-shadow: 0 0 4px currentColor; }
+.tactical-clock .demo-timeline-pulse-point { height: 17px; }
+.tactical-clock .demo-timeline-playhead { width: 1px; background: #f1d090; box-shadow: 0 0 0 3px #f1d0900d; }
+.tactical-clock .demo-timeline-playhead span { top: 0; left: -4px; width: 9px; height: 6px; padding: 0; border-radius: 0; clip-path: polygon(0 0, 100% 0, 50% 100%); font-size: 0; }
+.tactical-clock .demo-timeline-idle { top: 16px; font-size: 10px; opacity: .7; }
+.timeline-results-disclosure { flex-shrink: 0; color: #9aafbb; font-size: 10px; }
+.timeline-results-disclosure summary { cursor: pointer; padding: 4px 2px; }
+.timeline-results-disclosure summary b { color: #e5c88f; margin-left: 4px; }
+.timeline-results-disclosure summary > span { float: right; color: #718e9c; }
+.tactical-clock .demo-timeline-results { max-height: 70px; margin-top: 3px; }
+.tactical-clock .demo-timeline-detail { flex-shrink: 0; max-height: 40%; overflow: auto; margin-top: 0; padding: 8px; font-size: 10px; }
+.workspace-window[data-panel="timeline"] { container-type: inline-size; }
+@container (max-width: 600px) {
+  .tactical-clock .demo-timeline-header { flex-wrap: wrap; gap: 6px; }
+  .tactical-clock .demo-timeline-tools { width: 100%; justify-content: flex-end; }
+}

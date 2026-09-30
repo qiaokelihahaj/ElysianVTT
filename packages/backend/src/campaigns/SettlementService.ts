@@ -1,16 +1,9 @@
-import { Entity } from '@hard-vtt/shared';
+import type { CombatEndPayload } from '@hard-vtt/shared';
+export type { CombatEndPayload } from '@hard-vtt/shared';
 import { CharacterSheetRepository } from '../db/CharacterSheetRepository.js';
 import { Logger } from '../utils/Logger.js';
 
 const logger = Logger.create('Campaign:Settlement');
-
-export interface CombatEndPayload {
-	sceneId: string;
-	tick: number;
-	survivors: string[];
-	casualties: string[];
-	entities: Entity[];
-}
 
 export class SettlementService {
 	public async settleCombat(payload: CombatEndPayload): Promise<void> {

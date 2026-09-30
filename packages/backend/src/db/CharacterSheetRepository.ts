@@ -22,9 +22,17 @@ export class CharacterSheetRepository {
         this.entityCache.clear();
     }
 
+    private static invalidateEntities(ids: EntityId[]): void {
+        const changedIds = new Set(ids);
+        for (const id of changedIds) this.entityCache.delete(id);
+        for (const [sceneId, entities] of this.sceneCache) {
+            if (entities.some(entity => changedIds.has(entity.id))) this.sceneCache.delete(sceneId);
+        }
+    }
+
     static async findBySceneId(sceneId: string, useCache = true): Promise<Entity[]> {
         if (useCache && this.sceneCache.has(sceneId)) {
-            return this.sceneCache.get(sceneId)!;
+            return structuredClone(this.sceneCache.get(sceneId)!);
         }
 
         const sheets = await prisma.characterSheet.findMany({
@@ -41,46 +49,35 @@ export class CharacterSheetRepository {
         }
 
         logger.info(`Loaded ${entities.length} entities from scene ${sceneId}`, { sceneId, count: entities.length });
-        return entities;
+        return useCache ? structuredClone(entities) : entities;
+    }
+
+    /** 获取所有角色卡（探索模式用，不按场景过滤） */
+    static async findAll(): Promise<Entity[]> {
+        const sheets = await prisma.characterSheet.findMany() as CharacterSheetRow[];
+        return EntityMapper.sheetsToEntities(sheets, '__explore__');
     }
 
     static async findByIds(ids: EntityId[]): Promise<Entity[]> {
-        const cached: Entity[] = [];
-        const missing: EntityId[] = [];
-
-        for (const id of ids) {
-            const cachedEntity = this.entityCache.get(id);
-            if (cachedEntity) {
-                cached.push(cachedEntity);
-            } else {
-                missing.push(id);
-            }
-        }
-
-        if (missing.length === 0) return cached;
-
-        const sheets = await prisma.characterSheet.findMany({
-            where: { id: { in: missing } }
-        }) as CharacterSheetRow[];
-
-        const sheetById = new Map(sheets.map(s => [s.id, s]));
-        const fetched: Entity[] = [];
-
-        for (const id of missing) {
-            const sheet = sheetById.get(id);
-            if (sheet) {
+        const missing = [...new Set(ids.filter(id => !this.entityCache.has(id)))];
+        if (missing.length > 0) {
+            const sheets = await prisma.characterSheet.findMany({
+                where: { id: { in: missing } }
+            });
+            for (const sheet of sheets) {
                 const entity = EntityMapper.sheetToEntity(sheet, sheet.currentSceneId ?? '');
                 this.entityCache.set(entity.id, entity);
-                fetched.push(entity);
             }
         }
-
-        return [...cached, ...fetched];
+        return ids.flatMap(id => {
+            const entity = this.entityCache.get(id);
+            return entity ? [structuredClone(entity)] : [];
+        });
     }
 
     static async findById(id: EntityId): Promise<Entity | null> {
         const cached = this.entityCache.get(id);
-        if (cached) return cached;
+        if (cached) return structuredClone(cached);
 
         const sheet = await prisma.characterSheet.findUnique({
             where: { id }
@@ -90,7 +87,7 @@ export class CharacterSheetRepository {
 
         const entity = EntityMapper.sheetToEntity(sheet, sheet.currentSceneId ?? '');
         this.entityCache.set(entity.id, entity);
-        return entity;
+        return structuredClone(entity);
     }
 
     static async upsertCombatResults(
@@ -133,6 +130,7 @@ export class CharacterSheetRepository {
             });
         }));
 
+        this.invalidateEntities(entityIds);
         this.invalidateScene(sceneId);
         logger.info(`Upserted ${entities.length} entities for scene ${sceneId}`, { sceneId, casualties: casualties.length });
     }
@@ -144,24 +142,14 @@ export class CharacterSheetRepository {
             data: { currentSceneId: unset ? null : sceneId }
         });
 
-        if (unset) {
-            for (const entity of entities) {
-                this.entityCache.delete(entity.id);
-            }
-            for (const [scId, cachedEntities] of this.sceneCache) {
-                if (scId === sceneId) {
-                    this.sceneCache.delete(scId);
-                }
-            }
-        }
+        this.invalidateEntities(entityIds);
+        this.invalidateScene(sceneId);
     }
 
     static async deleteByIds(ids: EntityId[]): Promise<void> {
         await prisma.characterSheet.deleteMany({
             where: { id: { in: ids } }
         });
-        for (const id of ids) {
-            this.entityCache.delete(id);
-        }
+        this.invalidateEntities(ids);
     }
 }

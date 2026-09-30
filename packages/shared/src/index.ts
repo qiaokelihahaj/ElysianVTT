@@ -237,6 +237,15 @@ export interface AppliedEffect {
     sourceEntityId: EntityId;
     remainingTicks: number;  // -1 为永久
     stacks: number;
+    /** Optional rule-defined behavior carried by a stateful effect. */
+    metadata?: AppliedEffectMetadata;
+}
+
+export interface AppliedEffectMetadata {
+    /** Multiplier applied to the next incoming DAMAGE effect. */
+    damageMultiplier?: number;
+    /** Negates the next incoming DAMAGE effect when true. */
+    negateDamage?: boolean;
 }
 
 export interface Entity {
@@ -257,6 +266,8 @@ export interface Entity {
     bodyParts?: Record<string, BodyPartState>;  // 部位破坏状态（仅要害优先路线使用）
     coverState?: CoverState;                    // Phase 3.3: 掩体状态
     currentStance?: TacticalStance;             // Phase 3.3: 战术姿态
+    equippedWeaponId?: string;
+    droppedWeaponIds?: string[];
     bodyBlocking?: boolean;                    // Phase 3.5: 能否阻挡路径
     formationContext?: {                        // Phase 3.5: 阵型上下文
         interceptConfig?: InterceptConfig;
@@ -278,6 +289,23 @@ export interface Entity {
         lastMoveTick?: number;                         // Phase 3.4: 上次移动 Tick
         pulseTickHistory?: number[];                   // Phase 5.1: 已执行脉冲的实际 Tick（增量时间轴修正）
         timelineStart?: number;                        // Phase 5.1: 动作开始 Tick（用于时间轴更新）
+        /**
+         * Event-driven ACTIVE window for the current strike/pulse.  The
+         * interval is half-open: [activeWindowStart, activeWindowEnd).
+         * `activeHitTargetIds` is the per-strike ledger; a target is consumed
+         * once it is checked while in range, even if a guard reduces the
+         * resulting damage to zero.
+         */
+        activeWindowStart?: Tick;
+        activeWindowEnd?: Tick;
+        activeStrikeIndex?: number;
+        activeStrikeCount?: number;
+        activeTargetIds?: EntityId[];
+        activeHitTargetIds?: EntityId[];
+        /** Preserved declaration priority for position-triggered rechecks. */
+        priorityOverride?: number;
+        /** Current channel pulse committed, but no subsequent pulse allowed. */
+        stopAfterActiveWindow?: boolean;
     };
 }
 
@@ -287,8 +315,26 @@ export interface Entity {
 // ==========================================
 export type ExpressionString = string;
 
+/** Optional rule-defined spatial behavior committed at the action's ACTIVE boundary. */
+export interface SpatialActionConfig {
+    stance?: TacticalStance;
+    rotationDelta?: number;
+    reach?: { minReach?: number; deadZoneRatio?: number };
+    backstabMultiplier?: number;
+    weaponOperation?: { type: 'EQUIP' | 'DROP'; weaponId?: string };
+    requiredWeaponId?: string;
+    guard?: EntityFormation;
+    blockZone?: { radius: number; durationTicks: number; triggerDamage: number };
+    evade?: 'DUCK' | 'HOP' | 'SLIP';
+}
+
 export interface ActionTemplate {
     id: string;
+    label?: string;
+    description?: string;
+    /** Explicit picker semantics for cell-targeted attacks and self actions. */
+    targetKind?: 'entity' | 'cell' | 'none';
+    spatial?: SpatialActionConfig;
     tags: string[];
     attackTags?: AttackTag[];  // Attack type tags for micro-evasion
     timeCost: { startupTicks: number; recoveryTicks: number; };
@@ -303,10 +349,28 @@ export interface ActionTemplate {
         maxPulses?: number;           // 最大触发次数（不填则无限，直到资源耗尽或手动取消）
         pulseResourceCost?: Record<string, ExpressionString>;  // 每次脉冲额外消耗
     };
+    /**
+     * Duration of one event-driven ACTIVE window.  The end boundary is
+     * exclusive and entering RECOVERY never applies the effect.
+     */
+    activeWindowTicks?: number;
+    /**
+     * Optional finite multi-strike sequence.  The first strike uses the
+     * action's normal (large) startupTicks plus this small startup; every
+     * following strike uses this small startup between ACTIVE windows.  This
+     * is deliberately separate from channelOptions because it has no
+     * sustain/pulse-resource semantics unless a RulePack adds them elsewhere.
+     */
+    strikeSequence?: {
+        count: number;
+        startupTicks: number;
+        activeWindowTicks?: number;
+    };
     rulePackId?: string;
     launchProjectile?: {              // 实体弹道发射配置（Phase 3.2）
         trajectoryType: 'LINEAR' | 'PARABOLIC';
         speed: number;                // 每 Tick 推进速度
+        launchHeight?: number;       // Optional firing height above actor/target ground coordinates
         maxHeight?: number;           // 抛物线最高点 Z
         minRange?: number;            // 最小射程盲区
         collisionDieSize?: number;    // 碰撞判定面数（默认 d20）
@@ -393,10 +457,23 @@ export interface ActionExecutionEvent extends TickEvent {
     eventType: 'ACTION_PHASE';
     actorId: EntityId;
     targetIds?: EntityId[];
+    targetCoords?: Vector3D;
     actionTemplateId: string;
     phase: 'DELAY' | 'STARTUP' | 'ACTIVE' | 'RECOVERY';
+    /** Optional GM override; otherwise RulePack priorityExpr is evaluated. */
+    priorityOverride?: number;
+    causationId?: string;
     whiffed?: boolean;
     punishBonus?: number;
+    /** Event-driven ACTIVE window metadata; optional for legacy events. */
+    activeWindowStart?: Tick;
+    activeWindowEnd?: Tick;
+    strikeIndex?: number;
+    strikeCount?: number;
+    /** Marks a boundary event that closes an ACTIVE window without an effect. */
+    activeWindowEndEvent?: boolean;
+    /** Synthetic event raised by an entity position change. */
+    positionTriggered?: boolean;
 }
 
 export interface MovementStepEvent extends TickEvent {
@@ -439,11 +516,20 @@ export interface IEngineInstance {
     engineId: string;
     engineType: 'COMBAT' | 'EXPLORE';
     currentTick: Tick;
-    
+
     mountEntities(entities: Entity[]): void;
     unmountEntities(entityIds: EntityId[]): Entity[];
     receiveIntent(intent: ClientIntent): void;
-    
+    removeAllListeners(): void;
+
+    // SCENE_SYNC 兼容方法
+    getAllEntities(): Entity[];
+    getScheduledActions?(): ActionScheduledPayload[];
+    getActiveHookPresets?(): { id: string; entityId: string; label: string; trigger: HookTrigger; enabled: boolean }[];
+    getActiveDecisionPolls?(): DecisionPollPayload[];
+    getPendingDecisionCount?(): number;
+    getCombatResult?(): CombatSummary | null;
+
     // 引擎输出事件流，供 Scene 或 SettlementService 订阅
     on(event: 'STATE_MUTATED', listener: (diff: StateMutationPayload) => void): void;
     on(event: 'VISUAL_FX', listener: (fx: VisualEventPayload) => void): void;
@@ -459,7 +545,7 @@ export interface ClientIntent {
     intentType: 'CAST_ACTION' | 'MOVE' | 'INTERACT' | 'CANCEL_ACTION' | 'BATCH_CAST'
         | 'DEFEND' | 'DODGE' | 'REACTION' | 'MICRO_EVADE'
         | 'PRIORITY_TOGGLE' | 'GAMBIT_PRESET' | 'HOOK_PRESET'
-        | 'CHANGE_STANCE';
+        | 'CHANGE_STANCE' | 'ROTATE';
     clientTick: Tick;
     payload: {
         actionTemplateId?: string;
@@ -474,7 +560,25 @@ export interface ClientIntent {
         hookPreset?: HookPreset;
         gambitPreset?: { actionTemplateId: string; condition: HookTrigger };
         stance?: TacticalStance;      // CHANGE_STANCE 时指定目标姿态
+        rotationDelta?: number;        // ROTATE 时的朝向增量（角度）
+        priority?: number;             // Coordinated demo GM ordering override
+        effectiveTick?: Tick;          // Coordinated demo active boundary override
+        causationId?: string;
+        /** Coordinator plan id, preserved through the engine timeline. */
+        actionId?: string;
     };
+}
+
+/** 已完成持久化结算的战斗结果通知。 */
+export interface CombatSummary {
+    sceneId: string;
+    tick: Tick;
+    survivors: EntityId[];
+    casualties: EntityId[];
+}
+
+export interface CombatEndPayload extends CombatSummary {
+    entities: Entity[];
 }
 
 export interface StateMutationPayload {
@@ -487,18 +591,44 @@ export interface StateMutationPayload {
     actionPatches?: ActionTimelinePatch[];
 }
 
+/** A contiguous, authoritative phase interval on the Tick timeline. */
+export type ActionTimelineSegmentPhase =
+    | 'STARTUP'
+    | 'SMALL_STARTUP'
+    | 'ACTIVE'
+    | 'CHANNELING'
+    | 'MOVING'
+    | 'RECOVERY';
+
+export interface ActionTimelineSegment {
+    phase: ActionTimelineSegmentPhase;
+    start: Tick;
+    end: Tick;
+    /** Strike/pulse index for ACTIVE and its immediately preceding startup. */
+    strikeIndex?: number;
+}
+
+export interface ActionTimeline {
+    start: Tick;
+    startupEnd: Tick;
+    recoveryStart: Tick;
+    end: Tick;
+    pulseTicks?: Tick[];
+    /** Every strike/pulse ACTIVE interval, half-open [start,end). */
+    activeWindows?: Array<{ start: Tick; end: Tick; strikeIndex: number }>;
+    /**
+     * Explicit phase intervals. Optional for old payloads; when present this
+     * is authoritative and distinguishes initial and per-strike startup.
+     */
+    phaseSegments?: ActionTimelineSegment[];
+}
+
 /** 动作时间轴增量补丁 — 前端按 entityId 替换对应动作的 timeline */
 export interface ActionTimelinePatch {
     entityId: EntityId;
     actionId: string;
     actionName: string;
-    timeline: {
-        start: Tick;
-        startupEnd: Tick;
-        recoveryStart: Tick;
-        end: Tick;
-        pulseTicks: number[];
-    };
+    timeline: ActionTimeline;
 }
 
 export interface VisualEventPayload {
@@ -519,13 +649,14 @@ export interface ActionScheduledPayload {
     entityId: EntityId;
     actionId: string;
     actionName: string;
-    timeline: {
-        start: Tick;                         // 意图发出时刻
-        startupEnd: Tick;                    // 前摇结束（第一个 ACTIVE 帧）
-        recoveryStart: Tick;                 // 收招开始（最后一个 ACTIVE + 1）
-        end: Tick;                           // 收招结束
-        pulseTicks?: number[];               // 每个判定帧的具体 Tick（用于帧数条高亮）
-    };
+    /** Runtime event/plan id; optional for legacy producers. */
+    executionId?: string;
+    targetIds?: EntityId[];
+    targetCoords?: Vector3D;
+    priority?: number;
+    effectiveTick?: Tick;
+    causationId?: string;
+    timeline: ActionTimeline;
     tags?: string[];
 }
 
@@ -542,6 +673,13 @@ export interface DecisionPollPayload {
   countdownMs: number;
   availableOptions: DecisionOption[];
   tick: Tick;
+  /** Coordinated demo metadata; optional for legacy Hook consumers. */
+  version?: number;
+  controlEpoch?: number;
+  causationId?: string;
+  sourceActionId?: string;
+  joinDeadlineAt?: number;
+  selectDeadlineAt?: number;
 }
 
 export interface DecisionOption {
@@ -668,7 +806,7 @@ export interface MovementResult {
  */
 export interface ExploreIntent {
   actorId: EntityId;
-  intentType: 'MOVE' | 'INTERACT' | 'EXAMINE' | 'USE_SKILL' | 'TOGGLE_FOG';
+  intentType: 'MOVE' | 'INTERACT' | 'EXAMINE' | 'USE_SKILL' | 'TOGGLE_FOG' | 'ROTATE';
   /** Target hex for MOVE / EXAMINE */
   targetHex?: HexCoord;
   /** Target entity for INTERACT / USE_SKILL */
@@ -735,3 +873,393 @@ export interface TerrainVisibility {
   heightMultiplier: number;
 }
 
+// ==========================================
+// 10. 首个可玩遭遇协议 (Coordinated Encounter Demo)
+// ==========================================
+
+/**
+ * Faction is deliberately independent from the viewer role.  The aliases
+ * PLAYER/ENEMY are accepted while old callers migrate to PLAYERS/ENEMIES.
+ */
+export type EncounterFaction = string;
+
+/** Faction membership, controller identity and diplomatic relations are independent. */
+export interface EncounterSide {
+  kind: 'FACTION' | 'ENTITY';
+  id: string;
+}
+export type EncounterRelation = 'ALLY' | 'NEUTRAL' | 'HOSTILE';
+/** Relations are symmetric. Omitted pairs are unknown, not automatically hostile. */
+export interface EncounterSideRelation {
+  a: EncounterSide;
+  b: EncounterSide;
+  relation: EncounterRelation;
+}
+export type EncounterVictoryCondition = 'LAST_SIDE' | 'MANUAL';
+export type EncounterRole = 'GM' | 'PL' | 'OB';
+export type EncounterStatus =
+  | 'LOBBY'
+  | 'ACTIVE'
+  | 'PAUSED'
+  | 'VICTORY'
+  | 'DEFEAT'
+  | 'MUTUAL_DEFEAT'
+  | 'ENDED';
+
+export type EncounterActionPhase =
+  | 'DECLARED'
+  | 'DELAY'
+  | 'STARTUP'
+  | 'ACTIVE'
+  | 'CHANNELING'
+  | 'RECOVERY'
+  | 'CANCELLED'
+  | 'RESOLVED';
+
+export type EncounterDecisionStage = 'REACTION_JOIN' | 'REACTION_SELECT' | 'GM_REVIEW';
+
+/**
+ * Small, data-driven hint used by the encounter map overlay.  The rule
+ * engine still owns the actual effects; this only describes the visible
+ * relationship for a scheduled action.
+ */
+export type EncounterActionRelation = 'ATTACK' | 'HEAL' | 'SUPPORT';
+
+export interface EncounterPrincipal {
+  userId: string;
+  role: EncounterRole;
+  socketId: string;
+}
+
+export interface EncounterControl {
+  entityId: EntityId;
+  userId?: string;
+  role: EncounterRole;
+  /** Incremented whenever GM takes or releases this entity. */
+  controlEpoch: number;
+  connectedSocketIds: string[];
+  takenOverByGm: boolean;
+}
+
+export interface EncounterEntity extends Entity {
+  /** null explicitly means independent, even if legacy faction tags remain. */
+  faction?: EncounterFaction | null;
+  displayName?: string;
+  /** Optional stable template key used by the GM spawn palette. */
+  encounterTemplateId?: string;
+  /** Public entities are visible to players; GM entities are server-filtered. */
+  visibility?: 'PUBLIC' | 'GM';
+}
+
+export interface EncounterActionPlan {
+  actionId: string;
+  actorId: EntityId;
+  actionTemplateId: string;
+  targetIds: EntityId[];
+  targetCoords?: Vector3D;
+  phase: EncounterActionPhase;
+  declaredTick: Tick;
+  effectiveTick?: Tick;
+  priority: number;
+  /** Resources paid when the plan was accepted. Never pay twice on edit. */
+  paidResources: Record<string, number>;
+  decisionVersion: number;
+  controlEpoch: number;
+  causationId: string;
+  /** Optional visual relationship derived from the RulePack effects. */
+  relation?: EncounterActionRelation;
+  /** True only for an effect whose RulePack selector targets the actor itself. */
+  selfTarget?: boolean;
+  /** Server-derived final arrival Tick for a movement action. */
+  arrivalTick?: Tick;
+  /**
+   * Authoritative phase boundaries emitted by the combat engine.  This is
+   * optional because declaration-barrier plans and older servers do not have
+   * a scheduled timeline yet.  Consumers must not reconstruct durations from
+   * the action template when this field is absent.
+   */
+  timeline?: ActionScheduledPayload['timeline'];
+  cancelled?: boolean;
+  source?: 'PLAYER' | 'GM' | 'SYSTEM';
+}
+
+export interface EncounterReadySlot {
+  entityId: EntityId;
+  faction?: EncounterFaction | null;
+  controllerUserId?: string;
+  connected: boolean;
+  ready: boolean;
+  waiting: boolean;
+  /** Waiting defers this entity's next main action by this many ticks. */
+  readyAtTick?: Tick;
+  blockedReason?: string;
+  controlEpoch: number;
+}
+
+export interface EncounterPlanState {
+  windowTick: Tick;
+  slots: EncounterReadySlot[];
+  committed: boolean;
+  /** All accepted plans for the current/next barrier. */
+  actions: EncounterActionPlan[];
+  barrierVersion: number;
+}
+
+export interface EncounterDecisionWindow {
+  windowId: string;
+  stage: EncounterDecisionStage;
+  sourceActionId: string;
+  sourceEntityId: EntityId;
+  reactorEntityId: EntityId;
+  causationId: string;
+  openedTick: Tick;
+  joinDeadlineAt: number;
+  selectDeadlineAt?: number;
+  joinRemainingMs: number;
+  selectRemainingMs?: number;
+  /** Window version changes when its source plan/control is edited. */
+  version: number;
+  controlEpoch: number;
+  availableOptions: DecisionOption[];
+  respondedSocketIds: string[];
+  resolved: boolean;
+}
+
+export interface EncounterCausation {
+  causationId: string;
+  parentCausationId?: string;
+  sourceActionId?: string;
+  sourceEntityId?: EntityId;
+  reactionActionId?: string;
+  createdTick: Tick;
+  /** Prevent a single entity from reacting more than once in one chain. */
+  reactedEntityIds: EntityId[];
+}
+
+export interface EncounterLogEntry {
+  id: string;
+  tick: Tick;
+  message: string;
+  level?: LogLevel;
+  visibility?: LogVisibility;
+  actorId?: EntityId;
+  actionId?: string;
+  causationId?: string;
+  meta?: Record<string, unknown>;
+}
+
+export interface EncounterResult {
+  status: Exclude<EncounterStatus, 'LOBBY' | 'ACTIVE' | 'PAUSED'>;
+  winningFaction?: EncounterFaction;
+  /** Supports independent entities and several allied winners. */
+  winningSides?: EncounterSide[];
+  survivors: EntityId[];
+  casualties: EntityId[];
+  resolvedTick: Tick;
+  endedBy: 'RULES' | 'GM';
+  reason?: string;
+}
+
+export interface EncounterSnapshot {
+  encounterId: string;
+  revision: number;
+  tick: Tick;
+  status: EncounterStatus;
+  paused: boolean;
+  entities: EncounterEntity[];
+  relations?: EncounterSideRelation[];
+  victoryCondition?: EncounterVictoryCondition;
+  actions: EncounterActionPlan[];
+  plan: EncounterPlanState;
+  decisions: EncounterDecisionWindow[];
+  controls: EncounterControl[];
+  logs: EncounterLogEntry[];
+  result?: EncounterResult;
+  /** GM has requested a pause immediately before the next event Tick. */
+  tickBreakPending?: boolean;
+  /** Remaining pause/decision deadlines are server-derived values. */
+  serverTime?: number;
+}
+
+export type EncounterCommandType =
+  | 'START'
+  | 'WAIT'
+  | 'ACTION'
+  | 'RECOVER'
+  | 'REACTION_JOIN'
+  | 'REACTION_SELECT'
+  | 'REACTION_PASS'
+  | 'GM_PAUSE'
+  | 'GM_RESUME'
+  | 'GM_STEP'
+  | 'GM_TICK_BREAK'
+  | 'GM_TAKEOVER'
+  | 'GM_RELEASE'
+  | 'GM_ASSIGN_ENTITY'
+  | 'GM_EDIT_ACTION'
+  | 'CANCEL_ACTION'
+  | 'GM_CANCEL_ACTION'
+  | 'GM_ADJUST_ENTITY'
+  | 'GM_SPAWN'
+  | 'GM_REMOVE'
+  | 'GM_SET_FACTION'
+  | 'GM_SET_RELATION'
+  | 'GM_SET_VICTORY_CONDITION'
+  | 'GM_CORRECT'
+  | 'GM_PASS'
+  | 'GM_PASS_ALL'
+  | 'GM_END'
+  | 'GM_RESTART';
+
+export interface EncounterCommandBase<T extends EncounterCommandType = EncounterCommandType> {
+  requestId: string;
+  expectedRevision?: number;
+  /** Barrier-local optimistic concurrency token for main actions. */
+  expectedBarrierVersion?: number;
+  /** Decision-window-local optimistic concurrency token. */
+  expectedDecisionVersion?: number;
+  /** Per-entity control epoch. GM commands may omit it. */
+  controlEpoch?: number;
+  type: T;
+  payload: Record<string, unknown>;
+}
+
+export type EncounterCommand =
+  | (EncounterCommandBase<'START'> & { payload: { entityId?: EntityId } })
+  | (EncounterCommandBase<'WAIT'> & { payload: { entityId: EntityId } })
+  | (EncounterCommandBase<'ACTION'> & { payload: {
+      entityId: EntityId;
+      actionTemplateId: string;
+      targetIds?: EntityId[];
+      targetCoords?: Vector3D;
+      priority?: number;
+      effectiveTick?: Tick;
+    } })
+  | (EncounterCommandBase<'RECOVER'> & { payload: { entityId: EntityId; resource?: string } })
+  | (EncounterCommandBase<'REACTION_JOIN'> & { payload: { windowId: string } })
+  | (EncounterCommandBase<'REACTION_SELECT'> & { payload: {
+      windowId: string;
+      optionId: string | null;
+      targetIds?: EntityId[];
+      targetCoords?: Vector3D;
+    } })
+  | (EncounterCommandBase<'REACTION_PASS'> & { payload: { windowId: string } })
+  | (EncounterCommandBase<'GM_PAUSE'> & { payload: { reason?: string } })
+  | (EncounterCommandBase<'GM_RESUME'> & { payload: Record<string, never> })
+  | (EncounterCommandBase<'GM_STEP' | 'GM_TICK_BREAK'> & { payload: { count?: number } })
+  | (EncounterCommandBase<'GM_TAKEOVER' | 'GM_RELEASE'> & { payload: { entityId: EntityId } })
+  | (EncounterCommandBase<'GM_ASSIGN_ENTITY'> & { payload: {
+      entityId: EntityId;
+      userId: string;
+    } })
+  | (EncounterCommandBase<'GM_EDIT_ACTION'> & { payload: {
+      actionId: string;
+      reason?: string;
+      actionTemplateId?: string;
+      targetIds?: EntityId[];
+      targetCoords?: Vector3D;
+      effectiveTick?: Tick;
+      priority?: number;
+      cancel?: boolean;
+    } })
+  | (EncounterCommandBase<'CANCEL_ACTION' | 'GM_CANCEL_ACTION'> & { payload: { actionId: string; reason?: string } })
+  | (EncounterCommandBase<'GM_ADJUST_ENTITY'> & { payload: {
+      entityId: EntityId;
+      reason: string;
+      position?: Vector3D;
+      facing?: number;
+      resources?: Record<string, number>;
+      activeEffects?: AppliedEffect[];
+      visibility?: 'PUBLIC' | 'GM';
+    } })
+  | (EncounterCommandBase<'GM_SPAWN'> & { payload: {
+      templateId: string;
+      faction?: EncounterFaction | null;
+      position?: Vector3D;
+      entityId?: EntityId;
+    } })
+  | (EncounterCommandBase<'GM_REMOVE'> & { payload: { entityId: EntityId } })
+  | (EncounterCommandBase<'GM_SET_FACTION'> & { payload: { entityId: EntityId; faction: EncounterFaction | null } })
+  | (EncounterCommandBase<'GM_SET_RELATION'> & { payload: { a: EncounterSide; b: EncounterSide; relation: EncounterRelation | null } })
+  | (EncounterCommandBase<'GM_SET_VICTORY_CONDITION'> & { payload: { condition: EncounterVictoryCondition } })
+  | (EncounterCommandBase<'GM_CORRECT'> & { payload: {
+      entityId: EntityId;
+      reason: string;
+      changes: Record<string, unknown>;
+      actionId?: string;
+    } })
+  | (EncounterCommandBase<'GM_PASS'> & { payload: { windowId: string } })
+  | (EncounterCommandBase<'GM_PASS_ALL'> & { payload: Record<string, never> })
+  | (EncounterCommandBase<'GM_END'> & { payload: { reason?: string; winningFaction?: EncounterFaction; winningSides?: EncounterSide[] } })
+  | (EncounterCommandBase<'GM_RESTART'> & { payload: Record<string, never> });
+
+export interface CommandAccepted {
+  ok: true;
+  success: true;
+  requestId: string;
+  revision: number;
+  snapshot: EncounterSnapshot;
+  message?: string;
+}
+
+export interface CommandRejected {
+  ok: false;
+  success: false;
+  requestId: string;
+  revision: number;
+  code: string;
+  reason: string;
+  snapshot: EncounterSnapshot;
+}
+
+export type EncounterCommandResult = CommandAccepted | CommandRejected;
+/** Short alias used by server and client adapters. */
+export type CommandResult = EncounterCommandResult;
+
+export interface GMCorrectionRecord {
+  id: string;
+  gmUserId: string;
+  reason: string;
+  tick: Tick;
+  entityId?: EntityId;
+  actionId?: string;
+  before: Record<string, unknown>;
+  after: Record<string, unknown>;
+  causationId?: string;
+}
+
+export interface EncounterIncrement {
+  encounterId: string;
+  revision: number;
+  tick: Tick;
+  type: 'STATE' | 'PLAN' | 'DECISION' | 'LOG' | 'RESULT';
+  payload: Partial<EncounterSnapshot>;
+}
+
+export interface EncounterRulePack {
+  id: string;
+  name: string;
+  actionTemplates: ActionTemplate[];
+  actorTemplates: Record<string, Omit<EncounterEntity, 'id'>>;
+  map: MapData;
+  reactionJoinMs: number;
+  reactionSelectMs: number;
+  priorityTolerance: 0;
+  relations?: EncounterSideRelation[];
+  victoryCondition?: EncounterVictoryCondition;
+  scenario?: EncounterScenario;
+}
+
+/** Public scenario instructions, without hidden entities or server credentials. */
+export interface EncounterScenario {
+  id: string;
+  title: string;
+  summary: string;
+  objectives: Array<{ id: string; title: string; description: string; actionIds: string[] }>;
+}
+
+// Socket payloads live in a separate file to keep the core contract readable.
+export * from './demoNetwork.js';
+export * from './encounterFactions.js';
+
+export { hexOffsetToAxial, hexAxialToOffset, hexOffsetToPixel, pixelToHexOffset } from './hexGrid.js';

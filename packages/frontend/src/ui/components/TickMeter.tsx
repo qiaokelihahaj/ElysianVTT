@@ -16,7 +16,7 @@ const RULER_HEIGHT = 28;
 const BADGE_WIDTH = 80;
 
 export const TickMeter: React.FC = () => {
-    const currentTick = useGameStore(s => s.tick);
+    const currentTick = useGameStore(s => s.tactical.frozenTick ?? s.tick);
     const actions = useGameStore(s => s.scheduledActions);
     const entities = useGameStore(s => s.entities);
     const [collapsed, setCollapsed] = useState(false);

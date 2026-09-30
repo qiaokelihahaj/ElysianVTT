@@ -106,17 +106,22 @@ export class IntentRouter {
     }
 
     private validateIntent(intent: ClientIntent): string | null {
-        if (!intent.actorId) return 'actorId is required';
-        if (!intent.intentType) return 'intentType is required';
+        if (!intent || typeof intent !== 'object' || Array.isArray(intent)) return 'intent must be an object';
+        if (typeof intent.actorId !== 'string' || !intent.actorId) return 'actorId is required';
+        if (typeof intent.intentType !== 'string' || !intent.intentType) return 'intentType is required';
+        if (!intent.payload || typeof intent.payload !== 'object' || Array.isArray(intent.payload)) return 'payload must be an object';
+        if (intent.payload.targetCoords !== undefined && !this.isVector(intent.payload.targetCoords)) return 'targetCoords must contain finite x, y and z';
+        if (intent.payload.targetIds !== undefined && (!Array.isArray(intent.payload.targetIds) || intent.payload.targetIds.some(id => typeof id !== 'string' || !id))) return 'targetIds must contain entity IDs';
 
         switch (intent.intentType) {
             case 'BATCH_CAST':
-                if (!intent.payload?.batchIntents || intent.payload.batchIntents.length === 0) {
+                if (!Array.isArray(intent.payload.batchIntents) || intent.payload.batchIntents.length === 0) {
                     return 'batchIntents is required for BATCH_CAST';
                 }
                 for (const bi of intent.payload.batchIntents) {
-                    if (!bi.actorId) return 'actorId is required in each batch intent';
-                    if (!bi.actionTemplateId) return 'actionTemplateId is required in each batch intent';
+                    if (!bi || typeof bi !== 'object' || typeof bi.actorId !== 'string' || !bi.actorId) return 'actorId is required in each batch intent';
+                    if (typeof bi.actionTemplateId !== 'string' || !bi.actionTemplateId) return 'actionTemplateId is required in each batch intent';
+                    if (bi.targetIds !== undefined && (!Array.isArray(bi.targetIds) || bi.targetIds.some(id => typeof id !== 'string' || !id))) return 'targetIds must contain entity IDs in each batch intent';
                 }
                 break;
             case 'CAST_ACTION':
@@ -147,14 +152,53 @@ export class IntentRouter {
                 break;
             case 'PRIORITY_TOGGLE':
                 if (!intent.payload?.toggleMode) return 'toggleMode is required for PRIORITY_TOGGLE';
+                if (!['PASS_ALL', 'TARGET_ONLY', 'FULL_CONTROL'].includes(intent.payload.toggleMode)) return 'toggleMode must be PASS_ALL, TARGET_ONLY, or FULL_CONTROL';
+                break;
+            case 'CHANGE_STANCE':
+                if (!['ADS', 'BLIND_FIRE', 'NONE'].includes(intent.payload.stance ?? '')) return 'stance must be ADS, BLIND_FIRE, or NONE';
+                break;
+            case 'ROTATE':
+                if (typeof intent.payload.rotationDelta !== 'number' || !Number.isFinite(intent.payload.rotationDelta)) return 'rotationDelta must be a finite number';
                 break;
             case 'HOOK_PRESET':
                 if (!intent.payload?.hookPreset) return 'hookPreset is required for HOOK_PRESET';
+                const preset = intent.payload.hookPreset;
+                if (!preset.trigger || !preset.trigger.type) return 'hookPreset trigger type is required';
+                const trigger = preset.trigger;
+                switch (trigger.type) {
+                    case 'TICK_REACHED':
+                        if (!Number.isSafeInteger(trigger.targetTick) || trigger.targetTick < 0) return 'TICK_REACHED requires a non-negative integer targetTick';
+                        break;
+                    case 'ENEMY_ENTERS_RANGE':
+                        if (typeof trigger.range !== 'number' || !Number.isFinite(trigger.range) || trigger.range < 0) return 'ENEMY_ENTERS_RANGE requires a non-negative finite range';
+                        break;
+                    case 'ENTITY_MOVES_TO':
+                        if (!trigger.targetHex || !Number.isSafeInteger(trigger.targetHex.q) || !Number.isSafeInteger(trigger.targetHex.r))
+                            return 'ENTITY_MOVES_TO requires targetHex with q and r (numbers)';
+                        break;
+                    case 'ENTITY_ENTERS_AREA':
+                        if (!this.isVector(trigger.center) || !Number.isFinite(trigger.radius) || trigger.radius < 0) return 'ENTITY_ENTERS_AREA requires a finite center and non-negative radius';
+                        break;
+                    case 'ACTION_PHASE_DELAY':
+                        if (typeof trigger.sourceEntityId !== 'string' || !trigger.sourceEntityId || typeof trigger.actionTemplateId !== 'string' || !trigger.actionTemplateId || !Number.isSafeInteger(trigger.delayTicks) || trigger.delayTicks < 0) return 'ACTION_PHASE_DELAY requires sourceEntityId, actionTemplateId and non-negative integer delayTicks';
+                        break;
+                    case 'ENEMY_CASTS_SPELL':
+                        if (trigger.sourceFilter !== undefined && typeof trigger.sourceFilter !== 'string') return 'sourceFilter must be a string';
+                        break;
+                    default:
+                        return 'Unknown hook trigger type';
+                }
                 break;
             default:
                 return `Unknown intent type: ${intent.intentType}`;
         }
 
         return null;
+    }
+
+    private isVector(value: unknown): boolean {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+        const vector = value as Record<string, unknown>;
+        return [vector.x, vector.y, vector.z].every(component => typeof component === 'number' && Number.isFinite(component));
     }
 }

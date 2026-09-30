@@ -5,19 +5,29 @@ import { CombatEngine } from '../packages/backend/src/campaigns/engines/CombatEn
 import { ClashPool } from '../packages/backend/src/core/engine/ClashPool.js';
 import { Dictionary } from '../packages/backend/src/db/Dictionary.js';
 import { generateId } from '../packages/backend/src/utils/IdGenerator.js';
-import type { Entity, ActionTemplate } from '../packages/shared/src/index.js';
+import type {
+  Entity,
+  ActionTemplate,
+  ClientIntent,
+  DecisionPollPayload,
+  StateMutationPayload
+} from '../packages/shared/src/index.js';
 
 // ==========================================
 // Helper: 向 Dictionary 注入测试技能模板
 // ==========================================
 function registerTestAction(template: ActionTemplate) {
-  const dict = Dictionary as any;
-  if (!dict.actions) {
-    dict.actions = new Map<string, ActionTemplate>();
-  }
-  dict.actions.set(template.id, template);
+  Dictionary.registerAction(template);
 }
 
+function createEngine(sceneId: string): CombatEngine {
+  const engine = new CombatEngine(sceneId);
+  // 非交互集成场景明确选择 PASS；生产引擎会等待未响应的决策。
+  engine.on('DECISION_POLL', (poll: DecisionPollPayload) => {
+    engine.handleDecisionResponse({ windowId: poll.windowId, chosenOptionId: null }, 'integration-default');
+  });
+  return engine;
+}
 function makeEntity(id: string, hp: number = 100, poise: number = 50): Entity {
   return {
     id,
@@ -131,7 +141,7 @@ console.log('\n[Test 2] Dictionary 模板查询');
 // ============================================================
 console.log('\n[Test 3] CombatEngine 实例创建与实体挂载');
 {
-  const engine = new CombatEngine('scene-3');
+  const engine = createEngine('scene-3');
   assert(engine.engineId === 'scene-3', 'engineId 正确');
   assert(engine.engineType === 'COMBAT', 'engineType 正确');
 
@@ -274,7 +284,7 @@ console.log('\n[Test 6] ClashPool 伤害下限为 0');
 // ============================================================
 console.log('\n[Test 7] CombatEngine MOVE 意图');
 {
-  const engine = new CombatEngine('scene-move');
+  const engine = createEngine('scene-move');
   const mover = makeEntity('mover', 100, 50);
   mover.transform.coords = { x: 0, y: 0, z: 0 };
   engine.mountEntities([mover]);
@@ -299,9 +309,10 @@ console.log('\n[Test 7] CombatEngine MOVE 意图');
 // ============================================================
 console.log('\n[Test 8] CombatEngine CANCEL_ACTION');
 {
-  const engine = new CombatEngine('scene-cancel');
+  const engine = createEngine('scene-cancel');
+  engine.setAutoProcess(false);
   const hero = makeEntity('cancel_hero', 100, 50);
-  const dummy = makeEntity('cancel_dummy', 999, 50, 3, 0);
+  const dummy = makeEntity('cancel_dummy', 999, 50);
 
   // makeEntity 签名不支持动态坐标, 手动设置
   dummy.transform.coords = { x: 3, y: 0, z: 0 };
@@ -318,6 +329,9 @@ console.log('\n[Test 8] CombatEngine CANCEL_ACTION');
     payload: {}
   } as any);
 
+  assert(hero.currentActionContext?.phase === 'RECOVERY', '取消动作进入收招');
+  engine.processPending();
+  assert(hero.currentActionContext === undefined, '取消后的收招完成');
   const hp = dummy.resources.current.hp;
   assert(hp === 999, `取消后 dummy HP 仍为 999, 实际 ${hp}`);
 }
@@ -336,7 +350,7 @@ console.log('\n[Test 9] CombatEngine DEFEND 意图');
     priorityExpr: '20', diceRules: []
   } as ActionTemplate);
 
-  const engine = new CombatEngine('scene-parry');
+  const engine = createEngine('scene-parry');
   const defender = makeEntity('parry_hero', 100, 50);
   engine.mountEntities([defender]);
 
@@ -365,7 +379,7 @@ console.log('\n[Test 10] BATCH_CAST 多角色同时行动');
     priorityExpr: '10', diceRules: []
   } as ActionTemplate);
 
-  const engine = new CombatEngine('scene-batch');
+  const engine = createEngine('scene-batch');
   const a = makeEntity('batch_a', 50, 50);
   const b = makeEntity('batch_b', 50, 50);
   b.transform.coords = { x: 2, y: 0, z: 0 };
@@ -397,7 +411,7 @@ console.log('\n[Test 10] BATCH_CAST 多角色同时行动');
 // ============================================================
 console.log('\n[Test 11] STATE_MUTATED 事件广播');
 {
-  const engine = new CombatEngine('scene-state');
+  const engine = createEngine('scene-state');
   const attacker = makeEntity('state_atk', 100, 50);
   const victim = makeEntity('state_vic', 50, 50);
   victim.transform.coords = { x: 2, y: 0, z: 0 };
@@ -425,11 +439,15 @@ console.log('\n[Test 11] STATE_MUTATED 事件广播');
 // ============================================================
 console.log('\n[Test 12] 同一实体连续两次动作');
 {
-  const engine = new CombatEngine('scene-double');
+  const engine = createEngine('scene-double');
   const hero = makeEntity('double_hero', 100, 50);
   const target = makeEntity('double_target', 200, 50);
   target.transform.coords = { x: 2, y: 0, z: 0 };
   engine.mountEntities([hero, target]);
+
+  engine.on('DECISION_POLL', (poll: DecisionPollPayload) => {
+    engine.handleDecisionResponse({ windowId: poll.windowId, chosenOptionId: 'DO_NOTHING' }, 'integration-test-12');
+  });
 
   engine.receiveIntent({
     actorId: 'double_hero', intentType: 'CAST_ACTION', clientTick: 0,
@@ -452,7 +470,7 @@ console.log('\n[Test 12] 同一实体连续两次动作');
 // ============================================================
 console.log('\n[Test 13] unmountEntities 实体卸载');
 {
-  const engine = new CombatEngine('scene-unmount');
+  const engine = createEngine('scene-unmount');
   const e1 = makeEntity('um_1', 100, 50);
   const e2 = makeEntity('um_2', 100, 50);
   const e3 = makeEntity('um_3', 100, 50);
@@ -471,7 +489,7 @@ console.log('\n[Test 13] unmountEntities 实体卸载');
 // ============================================================
 console.log('\n[Test 14] 未挂载实体发送 intent 不崩溃');
 {
-  const engine = new CombatEngine('scene-ghost');
+  const engine = createEngine('scene-ghost');
   try {
     engine.receiveIntent({
       actorId: 'ghost', intentType: 'CAST_ACTION', clientTick: 0,
@@ -488,7 +506,7 @@ console.log('\n[Test 14] 未挂载实体发送 intent 不崩溃');
 // ============================================================
 console.log('\n[Test 15] 重复实体挂载');
 {
-  const engine = new CombatEngine('scene-dupe');
+  const engine = createEngine('scene-dupe');
   const hero = makeEntity('dupe_hero', 100, 50);
   engine.mountEntities([hero]);
   const count1 = engine.getAllEntities().length;
@@ -511,7 +529,8 @@ console.log('\n[Test 16] CombatEngine DODGE 意图');
     priorityExpr: '15'
   } as ActionTemplate);
 
-  const engine = new CombatEngine('scene-dodge');
+  const engine = createEngine('scene-dodge');
+  engine.setAutoProcess(false);
   const hero = makeEntity('dodge_hero', 100, 50);
   addFocus(hero, 50);
   hero.transform.coords = { x: 0, y: 0, z: 0 };
@@ -526,6 +545,8 @@ console.log('\n[Test 16] CombatEngine DODGE 意图');
   assert(hero.resources.current.focus === 40, `DODGE 消耗 FP, focus=${hero.resources.current.focus}`);
   assert(hero.currentActionContext?.actionTemplateId === 'DODGE', 'DODGE 上下文已设置');
   assert(hero.currentActionContext?.phase === 'ACTIVE', 'DODGE 阶段为 ACTIVE');
+  engine.processPending();
+  assert(hero.currentActionContext === undefined, 'DODGE 收招完成后清除上下文');
 }
 
 // ============================================================
@@ -533,7 +554,7 @@ console.log('\n[Test 16] CombatEngine DODGE 意图');
 // ============================================================
 console.log('\n[Test 17] CombatEngine INTERACT 意图 + VISUAL_FX');
 {
-  const engine = new CombatEngine('scene-interact');
+  const engine = createEngine('scene-interact');
   const hero = makeEntity('interact_hero', 100, 50);
   const npc = makeEntity('interact_npc', 50, 50);
   engine.mountEntities([hero, npc]);
@@ -557,7 +578,8 @@ console.log('\n[Test 17] CombatEngine INTERACT 意图 + VISUAL_FX');
 // ============================================================
 console.log('\n[Test 18] CombatEngine MICRO_EVADE 意图');
 {
-  const engine = new CombatEngine('scene-evade');
+  const engine = createEngine('scene-evade');
+  engine.setAutoProcess(false);
   const hero = makeEntity('evade_hero', 100, 50);
   addFocus(hero, 50);
   engine.mountEntities([hero]);
@@ -570,6 +592,8 @@ console.log('\n[Test 18] CombatEngine MICRO_EVADE 意图');
   assert(hero.currentActionContext?.actionTemplateId === 'MICRO_EVADE_DUCK', '微闪避 DUCK 上下文');
   assert(hero.currentActionContext?.phase === 'ACTIVE', '微闪避阶段为 ACTIVE');
   assert(hero.resources.current.focus === 45, `微闪避消耗 5 FP, focus=${hero.resources.current.focus}`);
+  engine.processPending();
+  assert(hero.currentActionContext === undefined, '微闪避收招完成后清除上下文');
 }
 
 // ============================================================
@@ -577,7 +601,7 @@ console.log('\n[Test 18] CombatEngine MICRO_EVADE 意图');
 // ============================================================
 console.log('\n[Test 19] CombatEngine PRIORITY_TOGGLE 意图');
 {
-  const engine = new CombatEngine('scene-toggle');
+  const engine = createEngine('scene-toggle');
   const hero = makeEntity('toggle_hero', 100, 50);
   engine.mountEntities([hero]);
 
@@ -601,7 +625,7 @@ console.log('\n[Test 19] CombatEngine PRIORITY_TOGGLE 意图');
 // ============================================================
 console.log('\n[Test 20] CombatEngine HOOK_PRESET 意图');
 {
-  const engine = new CombatEngine('scene-hook');
+  const engine = createEngine('scene-hook');
   const hero = makeEntity('hook_hero', 100, 50);
   engine.mountEntities([hero]);
 
@@ -635,7 +659,7 @@ console.log('\n[Test 21] COMBAT_END 事件广播');
     priorityExpr: '10', diceRules: []
   } as ActionTemplate);
 
-  const engine = new CombatEngine('scene-end');
+  const engine = createEngine('scene-end');
   const hero = makeEntity('end_hero', 100, 50);
   const enemy = makeEntity('end_enemy', 1, 10);
   enemy.transform.coords = { x: 2, y: 0, z: 0 };
@@ -669,7 +693,7 @@ console.log('\n[Test 22] HEAL 效果');
     priorityExpr: '5', diceRules: []
   } as ActionTemplate);
 
-  const engine = new CombatEngine('scene-heal');
+  const engine = createEngine('scene-heal');
   const hero = makeEntity('heal_hero', 50, 50);
   hero.resources.max.hp = 100; // 留出治愈空间
   engine.mountEntities([hero]);
@@ -696,7 +720,7 @@ console.log('\n[Test 23] 伤害减免 DR');
     priorityExpr: '10', diceRules: []
   } as ActionTemplate);
 
-  const engine = new CombatEngine('scene-dr');
+  const engine = createEngine('scene-dr');
   const attacker = makeEntity('dr_atk', 100, 50);
   const armored = makeEntity('dr_armored', 100, 50);
   addArmor(armored, 20); // DR 20 减免
@@ -717,7 +741,7 @@ console.log('\n[Test 23] 伤害减免 DR');
 // ============================================================
 console.log('\n[Test 24] 挥空 Whiff — 目标超出射程');
 {
-  const engine = new CombatEngine('scene-whiff');
+  const engine = createEngine('scene-whiff');
   const attacker = makeEntity('whiff_atk', 100, 50);
   const farTarget = makeEntity('whiff_target', 50, 50);
   farTarget.transform.coords = { x: 100, y: 0, z: 0 }; // 远超射程
@@ -730,7 +754,7 @@ console.log('\n[Test 24] 挥空 Whiff — 目标超出射程');
 
   assert(farTarget.resources.current.hp === 50, `挥空后目标 HP 不变, 实际 ${farTarget.resources.current.hp}`);
   // 挥空后进入 RECOVERY 阶段（上下文设为 undefined 在 RECOVERY 事件处理时）
-  assert(attacker.currentActionContext !== undefined, '攻击者挥空后进入收招');
+  assert(attacker.currentActionContext === undefined, '攻击者挥空后完成收招');
   assert(attacker.currentActionContext?.phase === 'RECOVERY' || attacker.currentActionContext === undefined,
     `攻击者处于收招或已清除`);
 }
@@ -751,7 +775,7 @@ console.log('\n[Test 25] Channeling 引导施法多脉冲');
     sustainResources: ['focus']
   } as ActionTemplate);
 
-  const engine = new CombatEngine('scene-channel');
+  const engine = createEngine('scene-channel');
   const caster = makeEntity('channel_caster', 100, 50);
   addFocus(caster, 50);
   const target = makeEntity('channel_target', 100, 50);
@@ -760,6 +784,9 @@ console.log('\n[Test 25] Channeling 引导施法多脉冲');
 
   const mutations: any[] = [];
   engine.on('STATE_MUTATED', (p: any) => mutations.push(p));
+  engine.on('DECISION_POLL', (poll: DecisionPollPayload) => {
+    engine.handleDecisionResponse({ windowId: poll.windowId, chosenOptionId: 'DO_NOTHING' }, 'integration-test-25');
+  });
 
   engine.receiveIntent({
     actorId: 'channel_caster', intentType: 'CAST_ACTION', clientTick: 0,
@@ -777,12 +804,20 @@ console.log('\n[Test 25] Channeling 引导施法多脉冲');
 // ============================================================
 console.log('\n[Test 26] Sustain 资源中断 — 引导中资源耗尽');
 {
-  const engine = new CombatEngine('scene-sustain');
+  const engine = createEngine('scene-sustain');
   const caster = makeEntity('sustain_caster', 100, 50);
   addFocus(caster, 3); // 仅够开始引导但不足以维持后续脉冲
   const target = makeEntity('sustain_target', 200, 50);
   target.transform.coords = { x: 2, y: 0, z: 0 };
   engine.mountEntities([caster, target]);
+
+  const mutations: StateMutationPayload[] = [];
+  const decisionPolls: DecisionPollPayload[] = [];
+  engine.on('STATE_MUTATED', (p: StateMutationPayload) => mutations.push(p));
+  engine.on('DECISION_POLL', (poll: DecisionPollPayload) => {
+    decisionPolls.push(poll);
+    engine.handleDecisionResponse({ windowId: poll.windowId, chosenOptionId: 'DO_NOTHING' }, 'integration-test-26');
+  });
 
   engine.receiveIntent({
     actorId: 'sustain_caster', intentType: 'CAST_ACTION', clientTick: 0,
@@ -790,8 +825,118 @@ console.log('\n[Test 26] Sustain 资源中断 — 引导中资源耗尽');
   } as any);
 
   // 第一次脉冲应该成功（10 伤害），后续脉冲因 focus 耗尽被中断
-  assert(target.resources.current.hp < 200, `目标受到至少一次伤害 HP=${target.resources.current.hp}`);
-  assert(caster.currentActionContext === undefined, '施法者上下文已清除（被中断）');
+  assert(target.resources.current.hp === 190, `目标仅受到一次伤害 HP=${target.resources.current.hp}`);
+  assert(decisionPolls.length > 0, `系统 Hook 已通过 DECISION_POLL 暴露, 实际 ${decisionPolls.length}`);
+  const recoveryMutation = mutations.find((p) => p.mutations.some((m) =>
+    m.entityId === 'sustain_caster' && m.changes?.currentActionContext?.phase === 'RECOVERY'));
+  const clearedMutation = mutations.find((p) => p.mutations.some((m) =>
+    m.entityId === 'sustain_caster' && m.changes?.currentActionContext === null));
+  assert(recoveryMutation !== undefined, '活体 STARTUP 中断广播 RECOVERY');
+  assert(clearedMutation !== undefined, '收招完成后广播 currentActionContext=null');
+  assert(recoveryMutation !== undefined && clearedMutation !== undefined && recoveryMutation.tick < clearedMutation.tick,
+    'STARTUP 的 RECOVERY 广播早于最终 null');
+  const recoveryContext = recoveryMutation?.mutations.find((m) => m.entityId === 'sustain_caster')?.changes.currentActionContext;
+  assert(clearedMutation !== undefined && recoveryContext?.resolveTick === clearedMutation.tick,
+    'STARTUP 最终 null tick 等于预期收招完成 tick');
+  assert(caster.currentActionContext === undefined, '施法者收招后上下文清除（被中断）');
+  assert(engine.getPendingDecisionCount() === 0, 'Test 26 系统 Hook 已清理');
+}
+
+// ============================================================
+// 生产回归：真实 CombatEngine 的 CHANNELING 中断必须经过 RECOVERY
+// ============================================================
+console.log('\n[Regression] 真实 CombatEngine CHANNELING 中断 → RECOVERY → null');
+{
+  registerTestAction({
+    id: 'REAL_CHANNEL_INTERRUPT', tags: ['SPELL', 'CHANNEL'],
+    timeCost: { startupTicks: 1, recoveryTicks: 3 },
+    resourceCost: {}, range: { type: 'MELEE', distanceExpr: '3' },
+    effects: [{ type: 'DAMAGE', targetSelector: 'PRIMARY', parameters: { resource: 'hp', amountExpr: '5' } }],
+    priorityExpr: '10', diceRules: [],
+    channelOptions: {
+      intervalTicks: 1,
+      maxPulses: 3,
+      pulseResourceCost: { focus: '5' }
+    },
+    sustainResources: ['focus']
+  } as ActionTemplate);
+
+  const engine = createEngine('scene-real-channel-interrupt');
+  const caster = makeEntity('real_channel_caster', 100, 50);
+  addFocus(caster, 5);
+  const target = makeEntity('real_channel_target', 100, 50);
+  target.transform.coords = { x: 2, y: 0, z: 0 };
+  engine.mountEntities([caster, target]);
+
+  const mutations: StateMutationPayload[] = [];
+  const decisionPolls: DecisionPollPayload[] = [];
+  engine.on('STATE_MUTATED', (p: StateMutationPayload) => mutations.push(p));
+  engine.on('DECISION_POLL', (poll: DecisionPollPayload) => {
+    decisionPolls.push(poll);
+    engine.handleDecisionResponse({ windowId: poll.windowId, chosenOptionId: 'DO_NOTHING' }, 'integration-regression');
+  });
+
+  engine.receiveIntent({
+    actorId: caster.id, intentType: 'CAST_ACTION', clientTick: 0,
+    payload: { actionTemplateId: 'REAL_CHANNEL_INTERRUPT', targetIds: [target.id] }
+  } as ClientIntent);
+
+  assert(target.resources.current.hp === 90, `CHANNELING 中断前仅完成两次脉冲 HP=${target.resources.current.hp}`);
+  assert(decisionPolls.length >= 2, `每个已执行脉冲均经过系统 DECISION_POLL, 实际 ${decisionPolls.length}`);
+  const recoveryMutation = mutations.find((p) => p.mutations.some((m) =>
+    m.entityId === caster.id && m.changes?.currentActionContext?.phase === 'RECOVERY'));
+  const clearedMutation = mutations.find((p) => p.mutations.some((m) =>
+    m.entityId === caster.id && m.changes?.currentActionContext === null));
+  assert(recoveryMutation !== undefined, '活体 CHANNELING 中断广播 RECOVERY');
+  assert(clearedMutation !== undefined, 'CHANNELING 中断收招完成后广播 null');
+  assert(recoveryMutation !== undefined && clearedMutation !== undefined && recoveryMutation.tick < clearedMutation.tick,
+    'CHANNELING 的 RECOVERY 广播早于最终 null');
+  const recoveryContext = recoveryMutation?.mutations.find((m) => m.entityId === caster.id)?.changes.currentActionContext;
+  assert(clearedMutation !== undefined && recoveryContext?.resolveTick === clearedMutation.tick,
+    'CHANNELING 最终 null tick 等于预期收招完成 tick');
+  assert(caster.currentActionContext === undefined, 'CHANNELING 中断最终清除上下文');
+  assert(engine.getPendingDecisionCount() === 0, 'CHANNELING 回归无遗留决策');
+}
+
+// ============================================================
+// 生产回归：死亡中断不应重新激活动作或进入 RECOVERY
+// ============================================================
+console.log('\n[Regression] 真实 CombatEngine 死亡中断不复活动作');
+{
+  registerTestAction({
+    id: 'REAL_SELF_LETHAL', tags: ['SPELL'],
+    timeCost: { startupTicks: 1, recoveryTicks: 3 },
+    resourceCost: {}, range: { type: 'SELF', distanceExpr: '0' },
+    effects: [{ type: 'DAMAGE', targetSelector: 'SELF', parameters: { resource: 'hp', amountExpr: '100' } }],
+    priorityExpr: '10', diceRules: [],
+    sustainResources: ['focus']
+  } as ActionTemplate);
+
+  const engine = createEngine('scene-real-death-interrupt');
+  const doomed = makeEntity('real_doomed_caster', 100, 50);
+  addFocus(doomed, 50);
+  const survivor = makeEntity('real_survivor', 100, 50);
+  engine.mountEntities([doomed, survivor]);
+
+  const mutations: StateMutationPayload[] = [];
+  engine.on('STATE_MUTATED', (p: StateMutationPayload) => mutations.push(p));
+  engine.on('DECISION_POLL', (poll: DecisionPollPayload) => {
+    engine.handleDecisionResponse({ windowId: poll.windowId, chosenOptionId: 'DO_NOTHING' }, 'integration-death-regression');
+  });
+
+  engine.receiveIntent({
+    actorId: doomed.id, intentType: 'CAST_ACTION', clientTick: 0,
+    payload: { actionTemplateId: 'REAL_SELF_LETHAL' }
+  } as ClientIntent);
+
+  assert(doomed.resources.current.hp === 0, '死亡回归确实结算致死效果');
+  assert(!mutations.some((p) => p.mutations.some((m) =>
+    m.entityId === doomed.id && m.changes?.currentActionContext?.phase === 'RECOVERY')),
+    '死亡中断不广播 RECOVERY');
+  assert(mutations.some((p) => p.mutations.some((m) =>
+    m.entityId === doomed.id && m.changes?.currentActionContext === null)),
+    '死亡中断广播最终 null');
+  assert(doomed.currentActionContext === undefined, '死亡后不保留或复活动作上下文');
 }
 
 // ============================================================
@@ -808,7 +953,8 @@ console.log('\n[Test 27] 微闪避 + 攻击标签匹配挥空');
     priorityExpr: '10', diceRules: []
   } as ActionTemplate);
 
-  const engine = new CombatEngine('scene-micro-evade');
+  const engine = createEngine('scene-micro-evade');
+  engine.setAutoProcess(false);
   const attacker = makeEntity('atk_hero', 100, 50);
   const evader = makeEntity('evade_target', 100, 50);
   addFocus(evader, 50);
@@ -828,6 +974,7 @@ console.log('\n[Test 27] 微闪避 + 攻击标签匹配挥空');
     payload: { actionTemplateId: 'HIGH_ATTACK', targetIds: ['evade_target'] }
   } as any);
 
+  engine.processPending();
   // 微闪避成功导致挥空：目标不应该受伤
   assert(evader.resources.current.hp === 100, `微闪避成功，目标 HP 不变, 实际 ${evader.resources.current.hp}`);
   assert(evader.resources.current.focus === 45, `微闪避消耗 5 FP, focus=${evader.resources.current.focus}`);
@@ -838,7 +985,7 @@ console.log('\n[Test 27] 微闪避 + 攻击标签匹配挥空');
 // ============================================================
 console.log('\n[Test 28] CANCEL_ACTION 空取消（容错）');
 {
-  const engine = new CombatEngine('scene-cancel-empty');
+  const engine = createEngine('scene-cancel-empty');
   const hero = makeEntity('empty_cancel', 100, 50);
   engine.mountEntities([hero]);
 
@@ -860,7 +1007,7 @@ console.log('\n[Test 28] CANCEL_ACTION 空取消（容错）');
 // ============================================================
 console.log('\n[Test 29] 重复 COMBAT_END 不重复触发');
 {
-  const engine = new CombatEngine('scene-end-repeat');
+  const engine = createEngine('scene-end-repeat');
   const hero = makeEntity('end_hero2', 100, 50);
   const enemy = makeEntity('end_enemy2', 1, 10);
   enemy.transform.coords = { x: 2, y: 0, z: 0 };
@@ -888,7 +1035,7 @@ console.log('\n[Test 29] 重复 COMBAT_END 不重复触发');
 // ============================================================
 console.log('\n[Test 30] 不存在的模板 ID 不崩溃');
 {
-  const engine = new CombatEngine('scene-bad-template');
+  const engine = createEngine('scene-bad-template');
   const hero = makeEntity('bad_hero', 100, 50);
   engine.mountEntities([hero]);
 
@@ -916,7 +1063,7 @@ console.log('\n[Test 31] BATCH_CAST 相杀触发 ENTITY_DIED + MUTUAL_KILL');
     priorityExpr: '10', diceRules: []
   } as ActionTemplate);
 
-  const engine = new CombatEngine('scene-clash-death');
+  const engine = createEngine('scene-clash-death');
   const a = makeEntity('clash_a', 30, 50);
   const b = makeEntity('clash_b', 30, 50);
   a.transform.coords = { x: 0, y: 0, z: 0 };
@@ -946,6 +1093,44 @@ console.log('\n[Test 31] BATCH_CAST 相杀触发 ENTITY_DIED + MUTUAL_KILL');
   const mutualKillFx = visualFx.filter(v => v.events?.some((e: any) => e.eventType === 'MUTUAL_KILL'));
   assert(mutualKillFx.length >= 1, 'MUTUAL_KILL 视觉特效已广播');
   assert(combatEnds.length === 1, 'COMBAT_END 已广播');
+}
+
+// ============================================================
+// 测试 32: 同步决策响应不能打断引导递归或遗留上下文
+// ============================================================
+console.log('\n[Test 32] 同步 DECISION_RESPONSE 后引导继续并清理上下文');
+{
+  registerTestAction({
+    id: 'SYNC_DECISION_CHANNEL', tags: ['SPELL'],
+    timeCost: { startupTicks: 1, recoveryTicks: 1 },
+    resourceCost: {}, range: { type: 'MELEE', distanceExpr: '3' },
+    effects: [{ type: 'DAMAGE', targetSelector: 'PRIMARY', parameters: { resource: 'hp', amountExpr: '5' } }],
+    priorityExpr: '10', diceRules: [],
+    channelOptions: { intervalTicks: 1, maxPulses: 2 }
+  } as ActionTemplate);
+
+  const engine = createEngine('scene-sync-decision');
+  const caster = makeEntity('sync_caster', 100, 50);
+  const target = makeEntity('sync_target', 100, 50);
+  target.transform.coords = { x: 2, y: 0, z: 0 };
+  engine.mountEntities([caster, target]);
+  engine.setPlayerControlledEntities([target.id]);
+
+  let pollCount = 0;
+  engine.on('DECISION_POLL', (poll: any) => {
+    pollCount++;
+    engine.handleDecisionResponse({ windowId: poll.windowId, chosenOptionId: 'DO_NOTHING' } as any, 'sync-test');
+  });
+
+  engine.receiveIntent({
+    actorId: caster.id, intentType: 'CAST_ACTION', clientTick: 0,
+    payload: { actionTemplateId: 'SYNC_DECISION_CHANNEL', targetIds: [target.id] }
+  } as any);
+
+  assert(target.resources.current.hp === 90, `同步决策后两次脉冲均结算 HP=${target.resources.current.hp}`);
+  assert(pollCount === 2, `两次脉冲各产生一个决策窗口, 实际 ${pollCount}`);
+  assert(caster.currentActionContext === undefined, '同步决策后施法者上下文清除');
+  assert(engine.getPendingDecisionCount() === 0, '同步决策后待决计数清零');
 }
 
 // ============================================================

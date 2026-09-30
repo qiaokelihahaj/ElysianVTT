@@ -1,9 +1,33 @@
-import { Entity, ResourcePool, Transform, PhysicsBody, Vector3D } from '@hard-vtt/shared';
+import type { Entity, ResourcePool, Transform, PhysicsBody } from '@hard-vtt/shared';
 import { safeParse } from '../utils/SafeJsonParser.js';
 
-const DEFAULT_RESOURCES: ResourcePool = { current: {}, max: {} };
-const DEFAULT_TRANSFORM: Transform = { coords: { x: 0, y: 0, z: 0 }, planeId: '', facing: 0 };
 const DEFAULT_PHYSICS: PhysicsBody = { scaleClass: 1, collisionRadius: 0.5, mass: 50, movementModes: ['WALK'] };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isFiniteNumber(value: unknown): value is number {
+    return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isResourcePool(value: unknown): value is ResourcePool {
+    return isRecord(value) && isRecord(value.current) && isRecord(value.max)
+        && Object.values(value.current).every(isFiniteNumber) && Object.values(value.max).every(isFiniteNumber);
+}
+
+function isTransform(value: unknown): value is Transform {
+    return isRecord(value) && isRecord(value.coords)
+        && isFiniteNumber(value.coords.x) && isFiniteNumber(value.coords.y) && isFiniteNumber(value.coords.z)
+        && typeof value.planeId === 'string' && isFiniteNumber(value.facing);
+}
+
+function isPhysicsBody(value: unknown): value is PhysicsBody {
+    return isRecord(value) && isFiniteNumber(value.scaleClass) && value.scaleClass >= 0
+        && isFiniteNumber(value.collisionRadius) && value.collisionRadius >= 0
+        && isFiniteNumber(value.mass) && value.mass >= 0
+        && Array.isArray(value.movementModes) && value.movementModes.every(mode => typeof mode === 'string');
+}
 
 function defaultTransformForScene(sceneId: string): Transform {
     return { coords: { x: 0, y: 0, z: 0 }, planeId: sceneId, facing: 0 };
@@ -36,9 +60,9 @@ export class EntityMapper {
             id: sheet.id,
             templateId: sheet.id,
             type: sheet.type as 'ACTOR' | 'PROP' | 'PROJECTILE',
-            resources: safeParse(sheet.resourcesJson, DEFAULT_RESOURCES, `resourcesJson of ${sheet.id}`),
-            transform: safeParse(sheet.transformJson, defaultTransformForScene(sceneId), `transformJson of ${sheet.id}`),
-            physics: safeParse(sheet.physicsJson, DEFAULT_PHYSICS, `physicsJson of ${sheet.id}`),
+            resources: safeParse(sheet.resourcesJson, { current: {}, max: {} }, `resourcesJson of ${sheet.id}`, isResourcePool),
+            transform: safeParse(sheet.transformJson, defaultTransformForScene(sceneId), `transformJson of ${sheet.id}`, isTransform),
+            physics: safeParse(sheet.physicsJson, structuredClone(DEFAULT_PHYSICS), `physicsJson of ${sheet.id}`, isPhysicsBody),
             activeEffects: []
         };
     }

@@ -40,6 +40,7 @@ export class ZoneTriggerSystem {
       lastTriggeredTick: undefined,
     };
     this.triggers.set(trigger.id, trigger);
+    this.firedOneShots.delete(trigger.id);
     return trigger;
   }
 

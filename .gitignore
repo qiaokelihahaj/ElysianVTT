@@ -8,6 +8,13 @@ node_modules/
 .env.local
 .env.*.local
 
+# Local encounter database, host credentials, and verification artifacts
+.demo/
+.tmp/
+.pnpm-store/
+.omc/
+packages/backend/prisma/*.db*
+
 # IDE
 .idea/
 .vscode/
@@ -18,6 +25,9 @@ node_modules/
 # Node / package manager
 **/node_modules/
 .pnpm/
+
+# Tests use the workspace pnpm lockfile
+test/package-lock.json
 
 # Build artifacts
 **/coverage/
@@ -44,3 +54,4 @@ pnpm-debug.log*
 # dotenv local variants (already covered above, keep for clarity)
 .env.local
 .env.*.local
+.demo-tactics/

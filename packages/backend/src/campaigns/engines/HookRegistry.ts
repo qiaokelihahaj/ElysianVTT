@@ -2,7 +2,6 @@ import { EventEmitter } from 'events';
 import {
     HookPreset, UnifiedHook, HookSource, Tick, EntityId, Entity
 } from '@hard-vtt/shared';
-import { generateId } from '../../utils/IdGenerator.js';
 import { VectorMath } from '../../utils/VectorMath.js';
 import { Logger } from '../../utils/Logger.js';
 
@@ -13,6 +12,11 @@ export class HookRegistry extends EventEmitter {
     constructor() {
         super();
         this.logger = Logger.create('Engine:HookRegistry');
+    }
+
+    /** Clear all registered hooks when an encounter is restarted. */
+    clear(): void {
+        this.hooks.clear();
     }
 
     /**
@@ -28,13 +32,16 @@ export class HookRegistry extends EventEmitter {
     ): UnifiedHook {
         const hook: UnifiedHook = {
             ...preset,
+            entityId,
             source,
             createdAtTick: currentTick,
             ttl,
             fired: false
         };
 
-        this.hooks.set(entityId, [...(this.hooks.get(entityId) ?? []), hook]);
+        // Editing or disabling a preset replaces its previous registration.
+        const entityHooks = (this.hooks.get(entityId) ?? []).filter(existing => existing.id !== hook.id);
+        this.hooks.set(entityId, [...entityHooks, hook]);
 
         this.logger.debug(
             `Hook '${hook.label}' (${hook.id}) registered for ${entityId}, source=${source}, ttl=${ttl}`,
@@ -100,6 +107,7 @@ export class HookRegistry extends EventEmitter {
                 if (!hook.enabled || hook.fired) continue;
                 if (hook.trigger.type !== 'TICK_REACHED') continue;
                 const target = hook.trigger.targetTick;
+                if (hook.ttl > 0 && target - hook.createdAtTick >= hook.ttl) continue;
                 if (target > fromTick && target <= toTick) {
                     if (earliest === null || target < earliest) {
                         earliest = target;
@@ -128,7 +136,7 @@ export class HookRegistry extends EventEmitter {
             if (!entity) continue;
 
             for (const hook of entityHooks) {
-                if (!hook.enabled || hook.fired) continue;
+                if (!hook.enabled || hook.fired || (hook.ttl > 0 && tick - hook.createdAtTick >= hook.ttl)) continue;
 
                 let matched = false;
                 const trigger = hook.trigger;
@@ -158,11 +166,10 @@ export class HookRegistry extends EventEmitter {
                     }
 
                     case 'ENTITY_MOVES_TO': {
-                        const { q, r } = trigger.targetHex;
-                        const ex = entity.transform.coords.x;
-                        const ey = entity.transform.coords.y;
-                        const hexDist = Math.sqrt((ex - q) ** 2 + (ey - r) ** 2);
-                        matched = hexDist < 1.5;
+                        const hex = VectorMath.offsetToAxial(
+                            Math.round(entity.transform.coords.x), Math.round(entity.transform.coords.y),
+                        );
+                        matched = hex.q === trigger.targetHex.q && hex.r === trigger.targetHex.r;
                         break;
                     }
 

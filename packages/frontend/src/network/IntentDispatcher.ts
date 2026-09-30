@@ -3,6 +3,18 @@ import { useGameStore } from '../store/gameStore';
 import type { EntityId, Vector3D, ClientIntent, HookPreset, PlayerPriorityToggle } from '@hard-vtt/shared';
 
 export class IntentDispatcher {
+    /** 画布与实体列表共用的选目标入口，保留施法者选择。 */
+    public static selectEntityOrTarget(entityId: EntityId) {
+        const state = useGameStore.getState();
+        if (state.uiState.mode === 'SELECT_ACTION_TARGET') {
+            if (!state.selectedEntityId || !state.uiState.activeActionId || state.combatResult) return;
+            IntentDispatcher.dispatchCastAction(state.selectedEntityId, state.uiState.activeActionId, [entityId]);
+            state.resetUiState();
+            return;
+        }
+        state.setSelectedEntityId(entityId);
+    }
+
     /**
      * 生成基础的 Intent Wrapper
      */
@@ -92,6 +104,19 @@ export class IntentDispatcher {
         };
         socketClient.sendIntent(intent);
         console.log('[IntentDispatcher] 发送 Hook 预设 (HOOK_PRESET):', intent);
+    }
+
+    /**
+     * 分发旋转指令（改变实体朝向）
+     * @param delta 旋转角度（正=顺时针, 负=逆时针）
+     */
+    public static dispatchRotate(actorId: EntityId, delta: number) {
+        const intent: ClientIntent = {
+            ...this.createBaseIntent(actorId, 'ROTATE'),
+            payload: { rotationDelta: delta }
+        };
+        socketClient.sendIntent(intent);
+        console.log('[IntentDispatcher] 发送旋转意图 (ROTATE):', intent);
     }
 
     /**

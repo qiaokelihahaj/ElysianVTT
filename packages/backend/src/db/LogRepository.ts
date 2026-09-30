@@ -9,6 +9,7 @@ import { Logger } from '../utils/Logger.js';
 import type { LogLevel } from '@hard-vtt/shared';
 import { generateId } from '../utils/IdGenerator.js';
 import type { LogVisibility } from '@hard-vtt/shared';
+import { safeParse } from '../utils/SafeJsonParser.js';
 const logger = Logger.create('DB:LogRepository');
 
 export class LogRepository {
@@ -63,8 +64,12 @@ export class LogRepository {
                     ...(sceneId && { sceneId }),
                     ...(visibility && { visibility }),
                     ...(level !== undefined && { level: String(level) }),
-                    ...(beforeTick !== undefined && { tick: { lte: beforeTick } }),
-                    ...(afterTick !== undefined && { tick: { gte: afterTick } })
+                    ...((beforeTick !== undefined || afterTick !== undefined) && {
+                        tick: {
+                            ...(beforeTick !== undefined && { lte: beforeTick }),
+                            ...(afterTick !== undefined && { gte: afterTick })
+                        }
+                    })
                 },
                 orderBy: { createdAt: 'desc' },
                 take: limit,
@@ -78,8 +83,8 @@ export class LogRepository {
                 visibility: log.visibility as LogVisibility,
                 message: log.message,
                 sceneId: log.sceneId || undefined,
-                tick: log.tick || undefined,
-                meta: log.metaJson ? JSON.parse(log.metaJson) : undefined
+                tick: log.tick ?? undefined,
+                meta: log.metaJson ? safeParse<unknown>(log.metaJson, undefined, `metaJson of ${log.id}`) : undefined
             }));
         } catch (error) {
             logger.error('Failed to query logs', error);

@@ -1,15 +1,16 @@
 // packages/backend/src/core/systems/ProjectileSystem.ts
 import type {
-    Entity, EntityId, Vector3D, TrajectoryType,
+    Entity, EntityId, Vector3D,
     ProjectileAdvanceEvent, CollisionRoll, CollisionResult,
-    ActionTemplate, Tick
+    Tick
 } from '@hard-vtt/shared';
 import { LogVisibility } from '@hard-vtt/shared';
 import { VectorMath } from '../../utils/VectorMath.js';
 import { Projectile } from '../entities/Projectile.js';
 import { SpatialSystem } from './SpatialSystem.js';
 import { EffectSystem } from './EffectSystem.js';
-import { Dictionary } from '../../db/Dictionary.js';
+import { DictionaryActionCatalog } from '../../db/Dictionary.js';
+import type { ActionCatalog } from '../../rules/ActionCatalog.js';
 import { Logger } from '../../utils/Logger.js';
 
 const logger = Logger.create('System:Projectile');
@@ -18,7 +19,7 @@ export interface ProjectileSystemResult {
     projectileId: EntityId;
     arrived: boolean;
     collisionResult?: CollisionResult;
-    damageMutations: Map<string, Record<string, any>>;
+    damageMutations: Map<string, Record<string, unknown>>;
     visualEvents: Array<{
         eventType: string;
         sourceId: EntityId;
@@ -58,7 +59,7 @@ export class ProjectileSystem {
         );
 
         projectile.waypoints = waypoints;
-        projectile.currentWaypointIndex = 0;
+        projectile.currentWaypointIndex = -1;
         projectile.transform.coords = { ...from };
 
         // 生成边界事件
@@ -105,7 +106,9 @@ export class ProjectileSystem {
         projectile: Projectile,
         evt: ProjectileAdvanceEvent,
         entities: Map<EntityId, Entity>,
-        obstacles: Vector3D[]
+        obstacles: Vector3D[],
+        actionCatalog: ActionCatalog = new DictionaryActionCatalog(),
+        onInterrupt?: (target: Entity) => void,
     ): ProjectileSystemResult {
         const result: ProjectileSystemResult = {
             projectileId: projectile.id,
@@ -129,35 +132,31 @@ export class ProjectileSystem {
             projectile.isAscending = evt.waypointIndex <= midPoint;
         }
 
-        // 检查障碍物碰撞（仅直射弹道检查地面障碍）
-        if (projectile.trajectoryType === 'LINEAR') {
-            const obstacleHit = SpatialSystem.checkObstacle(
-                evt.fromCoords,
-                evt.toCoords,
-                obstacles,
-                0.5
+        // 所有轨迹都按当前航段高度检测障碍，抛物线只能越过低于弧线的墙。
+        const obstacleHit = this.checkObstacleCollision(evt.fromCoords, evt.toCoords, obstacles);
+        const entityHit = this.checkEntityCollision(projectile, evt.fromCoords, evt.toCoords, entities);
+        if (obstacleHit && (!entityHit || obstacleHit.progress <= entityHit.progress)) {
+            projectile.transform.coords = { ...obstacleHit.coords };
+            logger.game(
+                `🧱 [Projectile] ${projectile.id} 击中障碍物 (${obstacleHit.coords.x.toFixed(1)},${obstacleHit.coords.y.toFixed(1)})`,
+                { projectileId: projectile.id, obstacle: obstacleHit },
+                LogVisibility.PLAYER
             );
-            if (obstacleHit) {
-                logger.game(
-                    `🧱 [Projectile] ${projectile.id} 击中障碍物 (${obstacleHit.x.toFixed(1)},${obstacleHit.y.toFixed(1)})`,
-                    { projectileId: projectile.id, obstacle: obstacleHit },
-                    LogVisibility.PLAYER
-                );
-                projectile.onCollision();
-                result.arrived = true;
-                result.visualEvents.push({
-                    eventType: 'COLLISION',
-                    sourceId: projectile.id,
-                    targetCoords: { ...projectile.transform.coords }
-                });
-                return result;
-            }
+            result.collisionResult = projectile.onCollision();
+            result.damageMutations = this.applyImpactEffects(projectile, undefined, entities, evt.targetTick, actionCatalog, onInterrupt);
+            result.arrived = true;
+            result.visualEvents.push({
+                eventType: 'COLLISION',
+                sourceId: projectile.id,
+                targetCoords: { ...projectile.transform.coords }
+            });
+            return result;
         }
 
-        // 检查是否与实体碰撞（网格重叠检测）
-        const collisionTarget = this.checkEntityCollision(projectile, entities);
-        if (collisionTarget) {
-            const entity = entities.get(collisionTarget)!;
+        // 扫掠检测航段，避免高速投射物越过小体积目标；按路径先后结算。
+        if (entityHit) {
+            const entity = entityHit.entity;
+            const collisionTarget = entity.id;
             const collisionRoll = projectile.rollCollision(entity.physics.scaleClass, false);
 
             logger.game(
@@ -168,15 +167,9 @@ export class ProjectileSystem {
             );
 
             if (collisionRoll.bodyPart) {
-                // 命中！应用伤害
+                projectile.transform.coords = { ...entityHit.coords };
                 const cr = projectile.onCollision(collisionTarget);
-                const damageMutations = this.applyProjectileDamage(
-                    projectile, entity, collisionRoll.bodyPart
-                );
-
-                for (const [id, changes] of damageMutations) {
-                    result.damageMutations.set(id, changes);
-                }
+                result.damageMutations = this.applyImpactEffects(projectile, entity, entities, evt.targetTick, actionCatalog, onInterrupt);
 
                 result.collisionResult = cr;
                 result.visualEvents.push({
@@ -195,139 +188,106 @@ export class ProjectileSystem {
             }
 
             result.arrived = projectile.hasCollided;
-            return result;
+            if (result.arrived || !evt.isLastStep) return result;
         }
 
         // 边界事件：到达终点
         if (evt.isLastStep) {
-            // 终点检测：如果有目标实体，在终点再检测一次碰撞
-            if (projectile.targetEntityId) {
-                const target = entities.get(projectile.targetEntityId);
-                if (target) {
-                    const targetHp = target.resources.current.hp ?? 0;
-                    if (targetHp > 0) {
-                        const dist = VectorMath.distance(
-                            projectile.transform.coords,
-                            target.transform.coords
-                        );
-                        const collisionRadius = projectile.physics.collisionRadius + (target.physics.collisionRadius ?? 1);
-                        if (dist < collisionRadius) {
-                            const cr = projectile.onCollision(target.id);
-                            const damageMutations = this.applyProjectileDamage(projectile, target);
-                            for (const [id, changes] of damageMutations) {
-                                result.damageMutations.set(id, changes);
-                            }
-                            result.collisionResult = cr;
-                            result.visualEvents.push({
-                                eventType: 'COLLISION',
-                                sourceId: projectile.id,
-                                targetId: target.id,
-                                targetCoords: { ...projectile.transform.coords }
-                            });
-                            result.arrived = true;
-                            return result;
-                        }
-                    }
-                }
-            }
-
-            projectile.hasCollided = true;
+            // 空格投掷也必须结算落点 AOE；PRIMARY 效果只有实体命中才生效。
+            result.collisionResult = projectile.onCollision();
+            result.damageMutations = this.applyImpactEffects(projectile, undefined, entities, evt.targetTick, actionCatalog, onInterrupt);
             result.arrived = true;
             result.visualEvents.push({
                 eventType: 'FX_SPAWN',
                 sourceId: projectile.id,
                 targetCoords: { ...projectile.transform.coords }
             });
+        } else if (!entityHit) {
+            result.visualEvents.push({ eventType: 'PROJECTILE_FLY', sourceId: projectile.id,
+                targetCoords: { ...projectile.transform.coords } });
         }
 
         return result;
     }
 
     /**
-     * 检查弹道当前位置是否与实体碰撞
-     * 使用碰撞半径重叠检测
+     * 检查整段弹道与实体的距离，返回最先经过的实体。
      */
     private static checkEntityCollision(
         projectile: Projectile,
+        from: Vector3D,
+        to: Vector3D,
         entities: Map<EntityId, Entity>
-    ): EntityId | null {
-        // 跳过发射者自身
+    ): { entity: Entity; coords: Vector3D; progress: number } | null {
+        let first: { entity: Entity; coords: Vector3D; progress: number } | null = null;
+        const delta = VectorMath.direction(from, to);
+        const lengthSquared = delta.x ** 2 + delta.y ** 2;
         for (const [id, entity] of entities) {
             if (id === projectile.sourceEntityId) continue;
             if (entity.type !== 'ACTOR' && entity.type !== 'PROP') continue;
+            if (entity.transform.planeId !== projectile.transform.planeId) continue;
+            if ((entity.resources.current.hp ?? 1) <= 0) continue;
 
-            const dist = VectorMath.distance(
-                projectile.transform.coords,
-                entity.transform.coords
-            );
-
+            const relative = VectorMath.direction(from, entity.transform.coords);
+            const projection = lengthSquared > 0
+                ? (relative.x * delta.x + relative.y * delta.y) / lengthSquared
+                : 0;
+            const progress = Math.max(0, Math.min(1, projection));
+            const coords = { x: from.x + delta.x * progress, y: from.y + delta.y * progress, z: from.z + delta.z * progress };
+            // 角色与墙占据地面以上的有限高度；低墙不会吞掉眼部高度的射线。
+            const baseZ = entity.transform.coords.z;
+            const height = entity.type === 'PROP' ? (entity.coverState?.height ?? 2) : 2;
+            const verticalDistance = Math.max(baseZ - coords.z, coords.z - baseZ - height, 0);
+            const dist = Math.hypot(coords.x - entity.transform.coords.x, coords.y - entity.transform.coords.y, verticalDistance);
             const collisionRadius = projectile.physics.collisionRadius + (entity.physics.collisionRadius ?? 1.0);
-            if (dist <= collisionRadius) {
-                return id;
+            if (dist <= collisionRadius && (!first || progress < first.progress)) {
+                first = { entity, coords, progress };
             }
         }
 
-        return null;
+        return first;
     }
 
     /**
-     * 应用弹道碰撞伤害
-     * 使用来源技能的 ActionTemplate 计算伤害
+     * 障碍坐标 Z 表示墙顶高度；必须用水平投影计算航段上的真实高度。
      */
-    private static applyProjectileDamage(
-        projectile: Projectile,
-        target: Entity,
-        bodyPart?: string
-    ): Map<string, Record<string, any>> {
-        const mutations = new Map<string, Record<string, any>>();
-
-        if (!projectile.sourceActionTemplateId) return mutations;
-
-        const template = Dictionary.getAction(projectile.sourceActionTemplateId);
-        if (!template) return mutations;
-
-        const recordChange = (entityId: string, path: string, value: any) => {
-            if (!mutations.has(entityId)) mutations.set(entityId, {});
-            mutations.get(entityId)![path] = value;
-        };
-
-        // 应用技能效果（将 projectile 作为 "actor" 传递，但效果对 target 应用）
-        for (const effect of template.effects) {
-            if (effect.targetSelector === 'PRIMARY' || effect.targetSelector === 'ALL_IN_AOE') {
-                const resKey = effect.parameters.resource;
-                const expr = effect.parameters.amountExpr;
-
-                if (!resKey || !expr) continue;
-
-                // 简化伤害计算：使用 projectile.sourceEntityId 的拥有者作为施法者
-                const { total: amount } = {
-                    total: Math.floor(Math.abs(effect.parameters.amount ?? 0))
-                };
-
-                const ignoreDr = effect.parameters.ignoreDr === true;
-                let effectiveAmount = amount;
-
-                if (!ignoreDr && resKey === 'hp') {
-                    const dr = target.resources.current.armor ?? target.resources.current.dr ?? 0;
-                    effectiveAmount = Math.max(0, amount - dr);
-                }
-
-                const currentVal = target.resources.current[resKey] ?? 0;
-                const newVal = Math.max(0, currentVal - effectiveAmount);
-                target.resources.current[resKey] = newVal;
-
-                recordChange(target.id, `resources.current.${resKey}`, newVal);
-
-                logger.game(
-                    `🎯 [Projectile Hit] ${projectile.sourceEntityId} 的投射物命中 ${target.id}` +
-                    `, 伤害=${effectiveAmount}${bodyPart ? `, 部位=${bodyPart}` : ''}`,
-                    { projectileId: projectile.id, targetId: target.id, damage: effectiveAmount, bodyPart },
-                    LogVisibility.PLAYER
-                );
+    private static checkObstacleCollision(from: Vector3D, to: Vector3D, obstacles: Vector3D[]): { coords: Vector3D; progress: number } | null {
+        const dx = to.x - from.x;
+        const dy = to.y - from.y;
+        const lengthSquared = dx ** 2 + dy ** 2;
+        let first: { coords: Vector3D; progress: number } | null = null;
+        for (const obstacle of obstacles) {
+            const progress = lengthSquared > 0
+                ? ((obstacle.x - from.x) * dx + (obstacle.y - from.y) * dy) / lengthSquared
+                : 0;
+            if (progress < 0 || progress > 1) continue;
+            const coords = { x: from.x + dx * progress, y: from.y + dy * progress, z: from.z + (to.z - from.z) * progress };
+            const horizontalDistance = Math.hypot(coords.x - obstacle.x, coords.y - obstacle.y);
+            if (horizontalDistance < 1 && obstacle.z >= coords.z && (!first || progress < first.progress)) {
+                first = { coords, progress };
             }
         }
+        return first;
+    }
 
-        return mutations;
+    /** 来源实体提供规则变量；效果、护甲、部位和 AOE 统一走正式效果系统。 */
+    private static applyImpactEffects(
+        projectile: Projectile,
+        target: Entity | undefined,
+        entities: Map<EntityId, Entity>,
+        tick: Tick,
+        actionCatalog: ActionCatalog = new DictionaryActionCatalog(),
+        onInterrupt?: (target: Entity) => void,
+    ): Map<string, Record<string, unknown>> {
+        const actor = entities.get(projectile.sourceEntityId);
+        const template = actionCatalog.getAction(projectile.sourceActionTemplateId);
+        if (!actor || !template) return new Map();
+        return EffectSystem.applyAction(
+            { ...template, effects: template.effects.filter(effect => effect.targetSelector !== 'SELF') },
+            actor, target ? [target] : [],
+            { tick, entities, actionCatalog, originCoords: { ...projectile.transform.coords }, applySpatial: false, skipReachCheck: true },
+            onInterrupt,
+        );
     }
 
     /**

@@ -1,5 +1,11 @@
 # ElysianVTT Backend Architecture & Context Guide
 
+当前局域网可玩链路：`demo/index.ts` → `demo/DemoServer.ts`（示例组合根）→ `network/EncounterServer.ts` → `encounters/EncounterCoordinator.ts` → `CombatEngine`。会话在 `sessions/LanSessionService.ts`，存储经 `persistence/EncounterRepository.ts` 注入，SQLite 实现在 `SqliteEncounterRepository.ts`。旧 `demo/` 导入保留薄兼容层。详见[局域网模块架构](../../../docs/LAN_MODULES.md)。
+
+当前 Demo 广播以 `DEMO_INCREMENT` 携带过滤后的完整 snapshot，并非真正的字段级差分；初连与重连使用 `DEMO_SNAPSHOT`。示例规则由 Demo 内容配置注入，通用引擎不包含示例规则。
+
+第三阶段将待提交计划/历史移入 `ActionPlanService`，将反应窗口/选择/资源预留移入 `DecisionWindowService`，将 GM 实体修正和审计移入 `GmCommandService`。正式遭遇复制内容并创建实例 `ActionCatalog`；CombatEngine、ClashPool、时间线和投射物均通过注入目录查询动作。旧未指定规则的引擎保留全局 Dictionary 兼容适配，正式遭遇不使用该适配。
+
 ## 1. 系统概述 (System Overview)
 ElysianVTT 是一个面向硬核战术跑团的虚拟桌面（VTT）后端引擎。
 本后端**不包含任何具体的游戏业务规则（如武器伤害、法术效果、特定武技）**。所有规则均由数据库加载的 JSON/DSL 模板定义。
@@ -7,6 +13,14 @@ ElysianVTT 是一个面向硬核战术跑团的虚拟桌面（VTT）后端引擎
 1. **时间轴调度：** 基于最小堆（Min-Heap）的离散事件模拟（Tick System）。
 2. **多模态场景管理：** 并发处理探索（无时间轴）与战斗（强制时间轴）的平滑切换。
 3. **状态同步：** 在内存中极速推演状态突变（State Mutation），并通过 WebSocket 以增量差分（Diff）广播至前端。
+
+### 战斗引擎职责边界
+
+- `campaigns/engines/CombatEngine.ts`：公开 intent/event 接口、Tick 队列、Clash 结算、Hook 决策与统一状态广播。
+- `campaigns/engines/CombatProjectileRuntime.ts`：每个引擎独立的投射物追踪与障碍物配置，负责发射、边界事件处理和结束清理；通过回调接入主引擎队列及广播，不独立推进时间。
+- `campaigns/engines/CombatActionTimeline.ts`：根据实际脉冲历史预测剩余移动/引导脉冲并生成时间线补丁；不修改实体、不调度或广播。移动时序参数由主引擎传入，避免重复常量。
+
+拆分回归测试：`pnpm exec tsx test/auth-isolated.runner.ts combat-extraction.test.ts hook-timing.test.ts engine.integration.test.ts`。该 runner 优先使用当前 TypeScript 源码，并使用临时 SQLite，不连接开发数据库。
 
 ## 2. 必须硬编码的核心机制 (Hardcoded Core Mechanics)
 在开发具体模块时，必须严格实现以下底层机制，切勿与具体游戏规则耦合：
@@ -92,11 +106,17 @@ export interface Entity {
     resources: ResourcePool;
     activeEffects: AppliedEffect[];
     
-    // 状态机上下文：记录当前正在执行的长前摇动作
+    // 状态机上下文：记录当前正在执行的长前摇动作或移动
     currentActionContext?: {
-        actionId: string;
-        phase: 'STARTUP' | 'ACTIVE' | 'RECOVERY';
+        type: 'CASTING' | 'MOVING';
+        actionId: string;                              // 当前压入优先队列的事件 ID
+        actionTemplateId?: string;                     // CASTING 时存储技能模板 ID
+        phase: 'DELAY' | 'STARTUP' | 'ACTIVE' | 'CHANNELING' | 'RECOVERY';
         resolveTick: number;
+        pulseCount?: number;                           // CHANNELING 时记录已执行的脉冲次数
+        eventIds?: string[];
+        waypoints?: Vector3D[];                        // MOVING 时存储所有航点坐标
+        currentWaypointIndex?: number;
     };
 }
 
@@ -161,12 +181,22 @@ export interface IEngineInstance {
 // ==========================================
 export interface ClientIntent {
     actorId: EntityId;
-    intentType: 'CAST_ACTION' | 'MOVE' | 'INTERACT';
-    clientTick: Tick; 
+    intentType: 'CAST_ACTION' | 'MOVE' | 'INTERACT' | 'CANCEL_ACTION' | 'BATCH_CAST'
+        | 'DEFEND' | 'DODGE' | 'REACTION' | 'MICRO_EVADE'
+        | 'PRIORITY_TOGGLE' | 'GAMBIT_PRESET' | 'HOOK_PRESET';
+    clientTick: Tick;
     payload: {
         actionTemplateId?: string;
         targetIds?: EntityId[];
         targetCoords?: Vector3D;
+        cancelSubType?: 'DELAY_CANCEL' | 'FORCE_CANCEL';
+        batchIntents?: Array<{ actorId: EntityId; actionTemplateId: string; targetIds?: EntityId[] }>;
+        defendSubType?: 'PARRY' | 'BLOCK';
+        evadeSubType?: 'DUCK' | 'HOP' | 'SLIP';
+        reactionTargetId?: EntityId;
+        toggleMode?: PlayerPriorityToggle;
+        hookPreset?: HookPreset;
+        gambitPreset?: { actionTemplateId: string; condition: HookTrigger };
     };
 }
 
@@ -182,7 +212,8 @@ export interface VisualEventPayload {
     tick: Tick;
     events: Array<{
         eventId: string;
-        eventType: 'FX_SPAWN' | 'ANIM_PLAY' | 'SOUND_PLAY' | 'UI_FLOATING_TEXT';
+        eventType: 'FX_SPAWN' | 'ANIM_PLAY' | 'SOUND_PLAY' | 'UI_FLOATING_TEXT'
+            | 'MUTUAL_KILL' | 'INTERRUPTED' | 'REACTION_AVAILABLE' | 'WHIFF' | 'DECISION_POLL';
         sourceId: EntityId;
         targetId?: EntityId;
         targetCoords?: Vector3D;
@@ -246,29 +277,33 @@ packages/backend/src/
 │   ├── engine/             # 时间轴驱动控制
 │   │   ├── PriorityQueue.ts # 基于最小堆(Min-Heap)的事件队列 (支持惰性删除)
 │   │   ├── TickLoop.ts     # 核心时间轴推进器 (跃迁式推进算法)
-│   │   └── ClashPool.ts    # 同 Tick 相杀/碰撞池结算逻辑
+│   │   └── ClashPool.ts    # 同 Tick 相杀/碰撞池结算逻辑 (二阶段提交+优先级排序)
 │   │
 │   ├── entities/           # 内存态游戏实体 (面向对象封装)
 │   │   ├── BaseEntity.ts   # 实体基类 (Transform, Physics, Resources)
-│   │   ├── Actor.ts        # 角色实体 (战斗资源、状态机、长前摇动作上下文)
+│   │   ├── Actor.ts        # 角色实体 (战斗资源、状态机、五阶段动作上下文)
 │   │   └── Projectile.ts   # 弹道实体 (存储轨迹方程、版本号、发射源)
 │   │
 │   ├── systems/            # 规则演算系统 (Data-Driven 解析器)
 │   │   ├── CombatSystem.ts # HEMA 战斗判定、重量级压制、相杀结果结算
-│   │   ├── SpatialSystem.ts # N维空间碰撞检测、射线预计算(Raycasting)、网格占用
-│   │   ├── RuleEvaluator.ts # 安全的数学表达式解析器 (解析 "3d6 + actor.str")
-│   │   └── EffectSystem.ts  # 动作副作用执行器 (DAMAGE, PUSH, INTERRUPT 等具体实现)
+│   │   ├── SpatialSystem.ts # N维空间碰撞检测、六边形网格、射线预计算
+│   │   ├── RuleEvaluator.ts # 安全的数学表达式解析器 (mathjs 沙箱，解析 "3d6 + actor.str")
+│   │   └── EffectSystem.ts  # 动作副作用执行器 (DAMAGE, HEAL, BUFF, PUSH, INTERRUPT)
 │   │
 │   └── events/             # 离散事件定义
-│       ├── EventFactory.ts # 意图拆解器 (将 ClientIntent 拆分为前摇/判定/收招微事件)
+│       ├── EventBus.ts     # 事件总线 (引擎间解耦通信)
+│       ├── EventFactory.ts # 意图拆解器 (将 ClientIntent 拆分为 DELAY/STARTUP/ACTIVE/RECOVERY 事件)
 │       └── ActionEvents.ts # 各类 TickEvent 的具体子类定义
 │
 ├── campaigns/              # 🗺️ 宏观战役与场景管理
 │   ├── CampaignManager.ts  # 多战役会话管理 (全局单例)
 │   ├── Scene.ts            # 场景容器 (一个场景可同时运行多个 Engine 实例)
 │   ├── engines/            # 模态引擎实现
-│   │   ├── CombatEngine.ts # Tick 强一致性战斗引擎 (封装核心循环)
-│   │   └── ExploreEngine.ts # 自由探索即时引擎 (无时间轴结算)
+│   │   ├── CombatEngine.ts # Tick 循环、Clash、决策与状态广播
+│   │   ├── CombatProjectileRuntime.ts # 投射物生命周期与边界事件
+│   │   ├── CombatActionTimeline.ts # 移动/引导时间线预测
+│   │   ├── ExploreEngine.ts # 自由探索即时引擎 (无时间轴结算)
+│   │   └── HookRegistry.ts # Hook 断点注入注册表 (系统钩子+玩家预设，支持 6 种触发类型)
 │   └── SettlementService.ts # 💰 独立结算服务 (监听实体死亡事件，处理 XP/掉落并写入 DB)
 │
 ├── network/                # 🌐 通讯与表现层
@@ -280,10 +315,27 @@ packages/backend/src/
 ├── db/                     # 🗄️ 持久化层
 │   ├── prisma.ts           # Prisma Client 实例
 │   ├── Dictionary.ts       # 规则字典缓存 (启动时加载 ActionTemplates 到内存)
-│   └── Repository.ts       # 数据读写仓库 (冷数据持久化/注水/脱水)
+│   ├── RulePackLoader.ts   # RulePack 加载器 (从 DB 加载全套规则定义并绑定到 Engine)
+│   ├── Repository.ts       # 数据读写仓库 (冷数据持久化/注水/脱水)
+│   ├── CharacterSheetRepository.ts  # 角色卡持久化
+│   ├── LogRepository.ts    # 日志持久化
+│   ├── PermissionGrantRepository.ts    # 权限授权持久化
+│   ├── PermissionSnapshotRepository.ts # 权限快照持久化
+│   ├── EntityMapper.ts     # 实体映射
+│   └── seed.ts             # 种子数据
+│
+├── auth/                   # 🔐 认证服务
+│   └── AuthenticationService.ts
+│
+├── permissions/            # 🛡️ 权限系统
+│   └── PermissionService.ts
+│
+├── network/routes/         # HTTP 路由
+│   ├── index.ts
+│   └── health.ts
 │
 └── utils/                  # 🛠️ 通用工具
-    ├── VectorMath.ts       # N 维向量运算工具
+    ├── VectorMath.ts       # N 维向量 + 六边形坐标运算工具
     ├── dice/               # 🎲 高性能掷骰与规则系统
     │   ├── DiceGenerator.ts # 伪随机数生成工厂支持
     │   └── DiceProcessor.ts # 预编译规则(爆炸骰/重投)的极速评估引擎，支持玩家强行改值干预
@@ -296,190 +348,69 @@ packages/backend/src/
 
 ## 6. 渐进式开发计划 (Progressive Development Roadmap)
 
-本项目采用**“架构完整，逐步实现”**的开发策略。
+本项目采用**”架构完整，逐步实现”**的开发策略。
 即：**不削弱已有设计抽象，仅在实现层面分阶段降级复杂度**，确保未来扩展时无需大规模重构。
 
----
-
-### 阶段 1：MVP - 可运行战斗核心 (Playable Combat Core)
-
-**目标：**
-实现一个最小可运行的战斗循环，支持基本行动与状态变化。
-
-**实现范围：**
-
-#### ✅ 时间轴系统（完整实现）
-
-* Min-Heap 优先队列 (`PriorityQueue`)
-* Tick 跃迁机制（无帧循环）
-* 惰性删除（Tombstone）
-
-#### ✅ 单一引擎实现（伪多模态）
-
-* 仅实现一个 `BaseEngine`
-* 使用 `engineType` 区分 `COMBAT` / `EXPLORE`
-* Explore 行为直接同步执行（不进入 TickQueue）
-
-#### ✅ 基础战斗流程
-
-* `ClientIntent → EventFactory → TickEvent`
-* 支持 Action 的 STARTUP / ACTIVE / RECOVERY 三阶段
-* 基础攻击流程可跑通
-
-#### ✅ Effect System（最小子集）
-
-仅实现：
-
-* `DAMAGE`
-* `HEAL`
-* `APPLY_BUFF`（简化版）
-
-保留但暂不实现：
-
-* `PUSH`
-* `INTERRUPT`
-
-#### ✅ 表达式系统（受限版本）
-
-支持：
-
-* 常量表达式（如 `"10"`）
-* 简单属性引用（如 `"actor.str + 5"`）
-* 基础比较（如 `"target.hp < 50"`）
-
-限制：
-
-* 不支持函数调用
-* 不支持复杂嵌套逻辑
-* 随机数通过 `DiceRoller` 单独处理
-
-#### ✅ 状态同步（简化版）
-
-* 仅发送“发生变化的实体”
-* `changes` 可为 Partial<Entity>（非严格 path diff）
+> **当前状态**: 阶段 1-4 核心能力已实现，阶段 5（脚本化/扩展生态）待启动。
+> 实际开发遵循 `prompt_plan.md` 中的 Phase 1-6 规划，与本 README 的阶段划分有重叠但不完全对应。
 
 ---
 
-**阶段成果：**
+### ✅ 阶段 1：MVP - 可运行战斗核心 (Playable Combat Core)
 
-* 可进行一场完整战斗
-* 支持基本技能释放与数值变化
-* 前后端可通过 WebSocket 同步状态
+**状态：已完成**（对应 prompt_plan.md Phase 1）
 
----
-
-### 阶段 2：多引擎分离与基础并发 (Engine Separation)
-
-**目标：**
-建立探索与战斗的真实分离结构，为复杂场景打基础。
-这里所谓的探索引擎质感更贴近博德之门3的常态体验，也就是角色可以以可变的速度（可能取决于距离（距离越远速度越快使得不让玩家等太久），目前尚不确定是否要和战斗模式的速度相关联（也就是要不要让常态下的盗贼和全甲骑士一个速度））在地图上快速移动，至于检定什么的不用开发，在这里目前版本的探索模式就是一个移动引擎
-
-**实现范围：**
-
-#### ✅ 引擎拆分
-
-* `CombatEngine`（Tick 驱动）
-* `ExploreEngine`（即时结算）
-
-#### ✅ Scene 路由完善
-
-* `Scene` 根据 `actorId` 路由 Intent
-* 支持实体动态挂载/卸载
-
-#### ✅ 简化 Clash Pool（弱版本）
-
-* 同 Tick 事件进行稳定排序：
-
-  * actionPriority（模板字段）
-  * actor 属性（如 speed）
-  * entityId（保证 deterministic）
-* 不实现真正“同时结算”，仅避免随机顺序
+* Min-Heap 优先队列 (`PriorityQueue`) + Tick 跃迁 + 惰性删除
+* 五阶段动作系统：DELAY → STARTUP → ACTIVE → RECOVERY（+ CHANNELING 引导模式）
+* 双轨资源系统：PP(韧性/poise) + FP(专注/focus)
+* Effect System：DAMAGE, HEAL, APPLY_BUFF, PUSH, INTERRUPT 全部实现
+* RulePack 数据架构：Prisma 表 + RulePackLoader + Engine 绑定
+* 六边形网格坐标：HexCoord + hexDistance + hexNeighbors
+* CANCEL_ACTION / FEINT 打断与假动作机制
+* BATCH_CAST 批量施法支持
 
 ---
 
-**阶段成果：**
+### ✅ 阶段 2：多引擎分离与基础并发 (Engine Separation)
 
-* 支持“探索 → 战斗 → 返回探索”流程
-* 多实体并发行为稳定可控
+**状态：已完成**（对应 prompt_plan.md Phase 1-2）
 
----
-
-### 阶段 3：空间系统与弹道优化 (Spatial & Projectile)
-
-**目标：**
-引入空间复杂性与远程攻击机制。
-
-**实现范围：**
-
-#### ✅ Projectile 初步实现
-
-* 引入 `Projectile` 实体
-* 基于 Tick 的移动（非预计算）
-
-#### ✅ SpatialSystem 基础能力
-
-* 网格占用检测
-* 基础碰撞判断
-
-#### ⏳ 弹道系统升级（阶段后期）
-
-* 引入射线预计算（Raycasting）
-* Boundary Event 替代逐 Tick 更新
+* `CombatEngine`（Tick 驱动）+ `ExploreEngine`（即时结算）引擎拆分
+* Scene 根据 `actorId` 路由 Intent，支持实体动态挂载/卸载
+* Clash Pool 完整版：二阶段提交 + 优先级排序 + 同 Tick 同时结算
 
 ---
 
-**阶段成果：**
+### ✅ 阶段 3：战斗核心博弈系统
 
-* 支持远程攻击（箭矢、法术）
-* 初步空间互动能力
+**状态：已完成**（对应 prompt_plan.md Phase 2）
 
----
-
-### 阶段 4：完整规则驱动与复杂交互 (Advanced Systems)
-
-**目标：**
-实现接近最终形态的系统复杂度。
-
-**实现范围：**
-
-#### ✅ 完整 Effect System
-
-* `PUSH`（位移）
-* `INTERRUPT`（打断）
-* 复杂条件触发
-
-#### ✅ Clash Pool（完整版）
-
-* 子帧排序（Sub-tick）
-* 同 Tick 相杀同时结算
-* 动作优先级系统
-
-#### ✅ 表达式系统增强
-
-* 更复杂的逻辑表达式
-* 可扩展 DSL（或替换为脚本系统）
-
-#### ✅ State Diff 优化
-
-* 扁平路径差分（如 `"resources.current.hp"`）
-* 更高效的广播结构
+* DR 装甲减伤系统
+* DEF 招架偏转系统（PARRY / BLOCK）
+* 差合/挥空惩罚系统（whiff → Recovery 延长 → 确反窗口）
+* 主动闪避系统（Dodge — 物理位移，范围伤害豁免）
+* Reaction 反应动作系统（打断闯入 + 有效拦截）
+* 微避系统（Micro-Evasion — HIGH/LOW/LINEAR Tag 匹配）
+* Hook 断点注入系统（6 种触发类型 + 决策窗口）
+* 决策倒计时系统（ReactionCountdown + TacticalDecisionPanel）
 
 ---
 
-**阶段成果：**
+### ✅ 阶段 4：空间系统与弹道 (Spatial & Projectile)
 
-* 高自由度战斗系统
-* 可支持复杂规则集（自定义 TRPG / 商业规则）
+**状态：骨架完成，弹道预计算待实现**
+
+* `Projectile` 实体已定义
+* `SpatialSystem` 基础能力：六边形网格、碰撞检测
+* 弹道射线预计算（Raycasting）+ Boundary Event → **待实现**
 
 ---
 
-### 阶段 5（可选）：脚本化与扩展生态
+### ⏳ 阶段 5（可选）：脚本化与扩展生态
 
-**目标：**
-提升规则表达能力与可扩展性。
-
-**可选方向：**
+**状态：待启动**（对应 prompt_plan.md Phase 6）
 
 * 引入脚本语言（如轻量 DSL / Lua / WASM）
 * 动作模板预编译（AST → bytecode）
 * 模组化规则系统（Mod Support）
+* Block 化角色卡渲染器

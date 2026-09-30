@@ -127,9 +127,9 @@ export class SpatialSystem {
     ): Vector3D[] {
         const totalDist = VectorMath.distance(from, to);
 
-        // 最小射程盲区：距离小于 minRange 时不生成航点（直接到达）
+        // 最小射程盲区：距离小于 minRange 时拒绝生成弹道
         if (options?.minRange && totalDist < options.minRange) {
-            return [{ ...to }];
+            return [];
         }
 
         if (trajectoryType === 'LINEAR') {
@@ -150,19 +150,19 @@ export class SpatialSystem {
         stepSize: number
     ): Vector3D[] {
         const waypoints: Vector3D[] = [];
-        let cursor = { ...from };
-
         // 确保地面高度一致
         const groundZ = from.z ?? 0;
+        let cursor = { ...from, z: groundZ };
+        const destination = { ...to, z: groundZ };
 
-        while (VectorMath.distance(cursor, to) > stepSize * 0.1) {
-            cursor = VectorMath.stepTowards(cursor, to, stepSize);
+        while (VectorMath.distance(cursor, destination) > stepSize * 0.1) {
+            cursor = VectorMath.stepTowards(cursor, destination, stepSize);
             waypoints.push({ x: cursor.x, y: cursor.y, z: groundZ });
         }
 
         // 确保终点包含
-        if (waypoints.length === 0 || VectorMath.distance(waypoints[waypoints.length - 1], to) > 0.01) {
-            waypoints.push({ ...to, z: groundZ });
+        if (waypoints.length === 0 || VectorMath.distance(waypoints[waypoints.length - 1], destination) > 0.01) {
+            waypoints.push(destination);
         }
 
         return waypoints;
@@ -473,13 +473,14 @@ export class SpatialSystem {
         const end = { x: to.x, y: to.y, z: to.z ?? 0 };
 
         while (VectorMath.distance(cursor, end) > 0.1) {
+            const previous = cursor;
             cursor = VectorMath.stepTowards(cursor, end, stepSize);
 
             for (const blocker of blockers) {
                 const dist = VectorMath.distance(cursor, blocker.transform.coords);
                 const collisionDist = (blocker.physics.collisionRadius ?? 0.5) + 0.3;
                 if (dist <= collisionDist) {
-                    return { blocked: true, blocker, blockPoint: { ...cursor } };
+                    return { blocked: true, blocker, blockPoint: { ...previous } };
                 }
             }
         }

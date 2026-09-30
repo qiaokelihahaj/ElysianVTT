@@ -8,6 +8,10 @@ export class PriorityQueue {
         return this.heap.length;
     }
 
+    public clear(): void {
+        this.heap.length = 0;
+    }
+
     // 压入新事件
     public push(event: TickEvent): void {
         this.heap.push(event);
@@ -28,6 +32,11 @@ export class PriorityQueue {
     // 查看最早的事件但不弹出
     public peek(): TickEvent | undefined {
         return this.heap.length > 0 ? this.heap[0] : undefined;
+    }
+
+    /** 获取所有事件的只读副本（用于 SCENE_SYNC 等快照场景） */
+    public getAllEvents(): readonly TickEvent[] {
+        return [...this.heap];
     }
 
     // --- 内部：堆调整算法 ---

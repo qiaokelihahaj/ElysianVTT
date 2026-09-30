@@ -4,7 +4,7 @@ import { SocketServer } from './network/SocketServer.js';
 import { Dictionary } from './db/Dictionary.js';
 import { Logger } from './utils/Logger.js';
 
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT || 3000);
 const logger = Logger.create('Server:Bootstrap');
 
 async function bootstrap() {
@@ -20,9 +20,10 @@ async function bootstrap() {
         new SocketServer(httpServer);
         logger.info('🌐 [Network] WebSocket 服务器已启动并监听指令.');
 
-        httpServer.listen(PORT, () => {
+        httpServer.listen(PORT, '127.0.0.1', () => {
             logger.info('\n================================================');
             logger.info(`✅ ElysianVTT 后端就绪！`);
+            logger.info('通用服务仅用于本机开发；局域网游玩请使用 pnpm demo。');
             logger.info(`📍 监听端口: ${PORT}`);
             logger.info(`🔗 调试地址: http://localhost:${PORT}/health`);
             logger.info('================================================\n');

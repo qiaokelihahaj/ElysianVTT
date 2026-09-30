@@ -1,276 +1,17 @@
-// test/fow.test.ts
-// Phase 4.2: 战争迷雾系统测试 — FOV 计算 + 迷雾三态 + 实体可见性过滤
+// 战争迷雾系统测试：直接验证生产实现。
+import type { Entity, HexCoord, MapData, TileDef } from '../packages/shared/src/index.js';
+import { FogOfWar } from '../packages/backend/src/core/systems/FogOfWar.js';
+import { VectorMath as VMath } from '../packages/backend/src/utils/VectorMath.js';
+import { SpatialSystem } from '../packages/backend/src/core/systems/SpatialSystem.js';
 
-// ==========================================
-// 1. 内联类型定义
-// ==========================================
-type EntityId = string;
-type TerrainType = 'GROUND' | 'WALL' | 'WATER' | 'OBSTACLE' | 'DOOR';
-type FogState = 'UNEXPLORED' | 'EXPLORED' | 'VISIBLE';
-
-interface HexCoord { q: number; r: number; }
-
-interface Vector3D { x: number; y: number; z: number; }
-
-interface TileDef {
-  hex: HexCoord;
-  terrain: TerrainType;
-  height?: number;
-}
-
-interface MapData {
-  id: string;
-  tiles: TileDef[];
-}
-
-interface FogCellState {
-  hex: HexCoord;
-  state: FogState;
-  lastSeenTick: number;
-}
-
-interface FogUpdatePayload {
-  entityId: EntityId;
-  revealedHexes: HexCoord[];
-  obscuredHexes: HexCoord[];
-  exploredHexes: HexCoord[];
-}
-
-interface Entity {
-  id: EntityId;
-  transform: { coords: Vector3D; planeId?: string; facing: number };
-  tags?: string[];
-  type: string;
-}
-
-// ==========================================
-// 2. 内联实现: VectorMath (minimal)
-// ==========================================
-class VMath {
-  static hexToVector3D(hex: HexCoord, zOffset = 0): Vector3D {
-    const x = 3 / 2 * hex.q;
-    const y = Math.sqrt(3) / 2 * hex.q + Math.sqrt(3) * hex.r;
-    return { x, y, z: zOffset };
-  }
-
-  static vector3DToHex(v3: Vector3D): HexCoord {
-    const q = Math.round((2 / 3 * v3.x) / 1);
-    const r = Math.round((-1 / 3 * v3.x + Math.sqrt(3) / 3 * v3.y) / 1);
-    return { q, r };
-  }
-}
-
-// ==========================================
-// 3. 内联实现: hex helpers
-// ==========================================
 function hexKey(h: HexCoord): string { return `${h.q},${h.r}`; }
-
 function hexSetHas(set: Set<HexCoord>, target: HexCoord): boolean {
-  for (const h of set) {
-    if (h.q === target.q && h.r === target.r) return true;
-  }
-  return false;
+  return [...set].some(h => h.q === target.q && h.r === target.r);
 }
-
-function hexCount(set: Set<HexCoord>): number { return set.size; }
-
-function hexDistance(a: HexCoord, b: HexCoord): number {
-  const dq = a.q - b.q, dr = a.r - b.r, ds = a.q + a.r - b.q - b.r;
-  return Math.max(Math.abs(dq), Math.abs(dr), Math.abs(ds));
+const hexDistance = SpatialSystem.hexDistance;
+function calculateFOV(fog: FogOfWar, entity: Entity, map: MapData | null, range: number): Set<HexCoord> {
+  return fog.calculateFOV(VMath.vector3DToHex(entity.transform.coords), map, [], range);
 }
-
-function hexNeighbors(coord: HexCoord): HexCoord[] {
-  return [[1,0],[0,1],[-1,1],[-1,0],[0,-1],[1,-1]]
-    .map(([dq, dr]) => ({ q: coord.q + dq, r: coord.r + dr }));
-}
-
-function hexRing(center: HexCoord, radius: number): HexCoord[] {
-  if (radius === 0) return [center];
-  const results: HexCoord[] = [];
-  let hex: HexCoord = { q: center.q + radius, r: center.r - radius };
-  const dirs: [number, number][] = [[0,1],[-1,1],[-1,0],[0,-1],[1,-1],[1,0]];
-  for (const [dq, dr] of dirs) {
-    for (let s = 0; s < radius; s++) {
-      results.push({ ...hex });
-      hex = { q: hex.q + dq, r: hex.r + dr };
-    }
-  }
-  return results;
-}
-
-// ==========================================
-// 4. 内联实现: FogOfWar 副本
-// ==========================================
-class FogOfWar {
-  private cells: Record<string, FogCellState> = {};
-  private entityFov: Map<EntityId, Set<string>> = new Map();
-  private defaultSightRange: number;
-
-  constructor(defaultSightRange = 6) {
-    this.defaultSightRange = defaultSightRange;
-  }
-
-  private axialToCube(hex: HexCoord): { x: number; y: number; z: number } {
-    return { x: hex.q, y: hex.r, z: -hex.q - hex.r };
-  }
-
-  private cubeRoundToAxial(cube: { x: number; y: number; z: number }): HexCoord {
-    let rx = Math.round(cube.x), ry = Math.round(cube.y), rz = Math.round(cube.z);
-    const dx = Math.abs(rx - cube.x), dy = Math.abs(ry - cube.y), dz = Math.abs(rz - cube.z);
-    if (dx > dy && dx > dz) rx = -ry - rz;
-    else if (dy > dz) ry = -rx - rz;
-    return { q: rx, r: ry };
-  }
-
-  private buildBlockingSet(mapData: MapData | null): Set<string> {
-    const b = new Set<string>();
-    if (!mapData) return b;
-    for (const tile of mapData.tiles) {
-      if (tile.terrain === 'WALL' || tile.terrain === 'OBSTACLE') {
-        b.add(hexKey(tile.hex));
-      }
-    }
-    return b;
-  }
-
-  getHexRing = hexRing;
-
-  getHexesInRange(center: HexCoord, range: number): HexCoord[] {
-    const r: HexCoord[] = [center];
-    for (let i = 1; i <= range; i++) r.push(...this.getHexRing(center, i));
-    return r;
-  }
-
-  hasLineOfSight(
-    origin: HexCoord, target: HexCoord,
-    blockingHexes: Set<string>, mapData: MapData | null,
-  ): boolean {
-    const dist = hexDistance(origin, target);
-    if (dist <= 1) return true;
-    const fromC = this.axialToCube(origin), toC = this.axialToCube(target);
-    for (let i = 1; i < dist; i++) {
-      const t = i / dist;
-      const interp = {
-        x: fromC.x + (toC.x - fromC.x) * t,
-        y: fromC.y + (toC.y - fromC.y) * t,
-        z: fromC.z + (toC.z - fromC.z) * t,
-      };
-      const hex = this.cubeRoundToAxial(interp);
-      if (blockingHexes.has(hexKey(hex))) {
-        const tile = mapData?.tiles.find(
-          t => t.hex.q === hex.q && t.hex.r === hex.r
-        );
-        if (tile && (tile.terrain === 'WALL' || tile.terrain === 'OBSTACLE')) {
-          return false;
-        }
-      }
-    }
-    return true;
-  }
-
-  calculateFOV(
-    entity: Entity, mapData: MapData | null,
-    sightRange?: number,
-  ): Set<HexCoord> {
-    const origin = VMath.vector3DToHex(entity.transform.coords);
-    const range = sightRange ?? this.defaultSightRange;
-    const visible = new Set<HexCoord>();
-    visible.add(origin);
-    const blocking = this.buildBlockingSet(mapData);
-    for (let r = 1; r <= range; r++) {
-      for (const hex of this.getHexRing(origin, r)) {
-        if (this.hasLineOfSight(origin, hex, blocking, mapData)) {
-          visible.add(hex);
-        }
-      }
-    }
-    // calculateFOV 不修改 entityFov — 由 updateFov 管理
-    return visible;
-  }
-
-  updateFog(entity: Entity, newFov: Set<HexCoord>, tick: number): FogUpdatePayload {
-    const prevKeys = this.entityFov.get(entity.id) ?? new Set<string>();
-    const newKeys = this.serializeHexSet(newFov);
-    const revealed: HexCoord[] = [];
-    const obscured: HexCoord[] = [];
-    const explored: HexCoord[] = [];
-
-    for (const h of newFov) {
-      const key = hexKey(h);
-      if (!prevKeys.has(key)) revealed.push(h);
-      const existing = this.cells[key];
-      if (!existing || existing.state === 'UNEXPLORED') {
-        this.cells[key] = { hex: h, state: 'VISIBLE', lastSeenTick: tick };
-        if (!existing) explored.push(h);
-      } else {
-        this.cells[key] = { ...existing, state: 'VISIBLE', lastSeenTick: tick };
-      }
-    }
-
-    for (const key of prevKeys) {
-      if (!newKeys.has(key)) {
-        const parts = key.split(',').map(Number);
-        obscured.push({ q: parts[0], r: parts[1] });
-        const cell = this.cells[key];
-        if (cell && cell.state === 'VISIBLE') {
-          this.cells[key] = { ...cell, state: 'EXPLORED' };
-        }
-      }
-    }
-
-    this.entityFov.set(entity.id, newKeys);
-
-    return {
-      entityId: entity.id,
-      revealedHexes: revealed,
-      obscuredHexes: obscured,
-      exploredHexes: explored,
-    };
-  }
-
-  getHexFogState(hex: HexCoord): FogState {
-    return this.cells[hexKey(hex)]?.state ?? 'UNEXPLORED';
-  }
-
-  isHexExplored(hex: HexCoord): boolean {
-    const s = this.cells[hexKey(hex)]?.state;
-    return s !== undefined && s !== 'UNEXPLORED';
-  }
-
-  isHexVisibleTo(entityId: EntityId, hex: HexCoord): boolean {
-    const fov = this.entityFov.get(entityId);
-    return fov ? fov.has(hexKey(hex)) : false;
-  }
-
-  filterVisibleEntities(viewerId: EntityId, entities: Entity[], mapData: MapData | null): Entity[] {
-    return entities.filter(target => {
-      if (target.id === viewerId) return true;
-      if (target.tags?.includes('INVISIBLE') || target.tags?.includes('HIDDEN')) return false;
-      const targetHex = VMath.vector3DToHex(target.transform.coords);
-      return this.isHexVisibleTo(viewerId, targetHex);
-    });
-  }
-
-  private serializeHexSet(hexes: Set<HexCoord>): Set<string> {
-    return new Set(Array.from(hexes).map(h => hexKey(h)));
-  }
-
-  reset(): void {
-    this.cells = {};
-    this.entityFov.clear();
-  }
-
-  initializeMap(mapData: MapData): void {
-    this.reset();
-    for (const tile of mapData.tiles) {
-      this.cells[hexKey(tile.hex)] = { hex: tile.hex, state: 'UNEXPLORED', lastSeenTick: 0 };
-    }
-  }
-}
-
-// ==========================================
-// 5. 测试框架
-// ==========================================
 let testCount = 0, passCount = 0;
 function assert(cond: boolean, label: string) {
   testCount++;
@@ -291,7 +32,9 @@ function spawnEntity(id: string, h: HexCoord): Entity {
   const pos = VMath.hexToVector3D(h);
   return {
     id,
-    type: 'ACTOR',
+    templateId: 'fow-test', type: 'ACTOR',
+    physics: { scaleClass: 1, collisionRadius: 0.5, mass: 1, movementModes: [] },
+    resources: { current: { hp: 100 }, max: { hp: 100 } }, activeEffects: [],
     transform: { coords: { x: pos.x, y: pos.y, z: 0 }, planeId: 'main', facing: 0 },
     tags: [],
   };
@@ -307,7 +50,7 @@ function buildOpenMap(width: number, height: number): MapData {
       tiles.push({ hex: { q, r }, terrain: 'GROUND' });
     }
   }
-  return { id: 'open_map', tiles };
+  return { id: 'open_map', name: 'open', width, height, spawnPoints: {}, tiles };
 }
 
 /** 构建带墙壁的地图 (10x8) */
@@ -322,7 +65,7 @@ function buildWallMap(): MapData {
       });
     }
   }
-  return { id: 'wall_map', tiles };
+  return { id: 'wall_map', name: 'wall', width: 10, height: 8, spawnPoints: {}, tiles };
 }
 
 /** 在 hex 集中按值查找 hex */
@@ -388,7 +131,7 @@ function runTests() {
     const entity = spawnEntity('scout', hex(7, 7));
 
     // 视野 5: 1+6+12+18+24+30 = 91
-    const fov5 = fow.calculateFOV(entity, openMap, 5);
+    const fov5 = calculateFOV(fow, entity, openMap, 5);
     assertEqual(fov5.size, 91, '视野5 可见 91 个 hex');
 
     // 自身 hex 始终在 FOV 中
@@ -419,27 +162,27 @@ function runTests() {
     // 从 (4,4) 出发
 
     // (4,4) → (6,4): 经过 (5,4) 缺口 → 视线通过
-    const los1 = fow.hasLineOfSight(hex(4, 4), hex(6, 4), blocking, wallMap);
+    const los1 = fow.hasLineOfSight(hex(4, 4), hex(6, 4), blocking);
     assert(los1, '通过缺口(5,4): (4,4)→(6,4) 视线可通过');
 
     // (4,4) → (5,3): 目标是 WALL 但距离≤1 → visible
-    const los2 = fow.hasLineOfSight(hex(4, 4), hex(5, 3), blocking, wallMap);
+    const los2 = fow.hasLineOfSight(hex(4, 4), hex(5, 3), blocking);
     assert(los2, '相邻 WALL hex(5,3) 始终可见 (dist=1)');
 
     // (4,4) → (6,2): 经过 (5,3) 是 WALL → 阻挡
-    const los3 = fow.hasLineOfSight(hex(4, 4), hex(6, 2), blocking, wallMap);
+    const los3 = fow.hasLineOfSight(hex(4, 4), hex(6, 2), blocking);
     assert(!los3, '穿过 WALL(5,3): (4,4)→(6,2) 视线阻挡');
 
     // (4,4) → (6,5): 经过 (5,5) 是 WALL → 阻挡
-    const los4 = fow.hasLineOfSight(hex(4, 4), hex(6, 5), blocking, wallMap);
+    const los4 = fow.hasLineOfSight(hex(4, 4), hex(6, 5), blocking);
     assert(!los4, '穿过 WALL(5,5): (4,4)→(6,5) 视线阻挡');
 
     // (4,4) → (7,6): dist=4, 中间 hex (5,5)=WALL → 阻挡
-    const los5 = fow.hasLineOfSight(hex(4, 4), hex(7, 6), blocking, wallMap);
+    const los5 = fow.hasLineOfSight(hex(4, 4), hex(7, 6), blocking);
     assert(!los5, '穿过 WALL: (4,4)→(7,6) 视线阻挡');
 
     // (4,4) → (7,0): 穿过 WALL(5,1)(6,0) 或路径上有 WALL → 阻挡
-    const los6 = fow.hasLineOfSight(hex(4, 4), hex(7, 0), blocking, wallMap);
+    const los6 = fow.hasLineOfSight(hex(4, 4), hex(7, 0), blocking);
     assert(!los6, '穿过 WALL: (4,4)→(7,0) 视线阻挡');
   }
 
@@ -452,15 +195,15 @@ function runTests() {
     const fow = new FogOfWar();
     const entity = spawnEntity('viewer', hex(10, 10));
 
-    assertEqual(fow.calculateFOV(entity, openMap, 1).size, 7, '视野1: 7 hex');
-    assertEqual(fow.calculateFOV(entity, openMap, 2).size, 19, '视野2: 19 hex');
-    assertEqual(fow.calculateFOV(entity, openMap, 3).size, 37, '视野3: 37 hex');
+    assertEqual(calculateFOV(fow, entity, openMap, 1).size, 7, '视野1: 7 hex');
+    assertEqual(calculateFOV(fow, entity, openMap, 2).size, 19, '视野2: 19 hex');
+    assertEqual(calculateFOV(fow, entity, openMap, 3).size, 37, '视野3: 37 hex');
 
     // 视野 0: 仅自身
-    assertEqual(fow.calculateFOV(entity, openMap, 0).size, 1, '视野0: 仅自身 1 hex');
+    assertEqual(calculateFOV(fow, entity, openMap, 0).size, 1, '视野0: 仅自身 1 hex');
 
     // 负数视为 0
-    assertEqual(fow.calculateFOV(entity, openMap, -1).size, 1, '负数视野: 仅自身 1 hex');
+    assertEqual(calculateFOV(fow, entity, openMap, -1).size, 1, '负数视野: 仅自身 1 hex');
   }
 
   // ===============================================
@@ -472,7 +215,7 @@ function runTests() {
     const fow = new FogOfWar(2);
 
     // 初始化
-    fow.initializeMap(openMap);
+    fow.initializeMap(openMap, 0);
     assertEqual(fow.getHexFogState(hex(5, 5)), 'UNEXPLORED', '初始化后 UNEXPLORED');
     assertEqual(fow.isHexExplored(hex(5, 5)), false, '初始化后未探索');
 
@@ -562,7 +305,7 @@ function runTests() {
 
     // 实体在 (4,4) — 墙壁左侧
     const entity = spawnEntity('watcher', hex(4, 4));
-    const fov = fow.calculateFOV(entity, wallMap, 6);
+    const fov = calculateFOV(fow, entity, wallMap, 6);
 
     // 左侧壁前 hex → 可见
     assert(findHexInSet(fov, 3, 4), '左侧 (3,4) 可见');
@@ -598,8 +341,8 @@ function runTests() {
     const alice = spawnEntity('alice', hex(3, 3));
     const bob = spawnEntity('bob', hex(9, 9));
 
-    fow.updateFog(alice, fow.calculateFOV(alice, openMap, 3), 1);
-    fow.updateFog(bob, fow.calculateFOV(bob, openMap, 3), 1);
+    fow.updateFog(alice, calculateFOV(fow, alice, openMap, 3), 1);
+    fow.updateFog(bob, calculateFOV(fow, bob, openMap, 3), 1);
 
     // 各自可见自身
     assert(fow.isHexVisibleTo('alice', hex(3, 3)), 'alice 可见自身 hex');
@@ -636,7 +379,7 @@ function runTests() {
 
     const allEntities = [viewer, ally, enemyVis, enemyHid, invisible];
 
-    const fov = fow.calculateFOV(viewer, wallMap, 5);
+    const fov = calculateFOV(fow, viewer, wallMap, 5);
     fow.updateFog(viewer, fov, 1);
 
     const visible = fow.filterVisibleEntities('viewer', allEntities, wallMap);
@@ -656,18 +399,18 @@ function runTests() {
     // 零视野
     const fow0 = new FogOfWar(0);
     const entity = spawnEntity('zero', hex(5, 5));
-    assertEqual(fow0.calculateFOV(entity, null, 0).size, 1, '零视野返回自身 hex');
+    assertEqual(calculateFOV(fow0, entity, null, 0).size, 1, '零视野返回自身 hex');
 
-    // 极大视野（系统不强制地图边界 — FOV 计算基于 blocking set）
-    const largeMap = buildOpenMap(20, 20);
+    // 极大视野 + 小地图 — FOV 受地图边界限制
+    const smallMap = buildOpenMap(5, 5);
     const fowLarge = new FogOfWar(10);
-    const entityMid = spawnEntity('zero', hex(10, 10));
-    const fovLarge = fowLarge.calculateFOV(entityMid, largeMap, 10);
-    assert(fovLarge.size > 0, '极大视野返回结果不崩溃');
+    const entitySmall = spawnEntity('zero', hex(2, 2));
+    const fovLarge = calculateFOV(fowLarge, entitySmall, smallMap, 10);
+    assert(fovLarge.size <= 25, `极大视野受地图大小限制 (25 tiles, 实际=${fovLarge.size})`);
 
     // null 地图 — 无阻挡
     const fowNo = new FogOfWar(3);
-    assertEqual(fowNo.calculateFOV(entity, null, 3).size, 37, 'null 地图视野3 → 37 hex');
+    assertEqual(calculateFOV(fowNo, entity, null, 3).size, 37, 'null 地图视野3 → 37 hex');
 
     // 全墙地图 — 仅自身可见
     const allWallTiles: TileDef[] = [];
@@ -676,15 +419,15 @@ function runTests() {
         allWallTiles.push({ hex: { q, r }, terrain: 'WALL' });
       }
     }
-    const allWallMap: MapData = { id: 'all_wall', tiles: allWallTiles };
+    const allWallMap: MapData = { id: 'all_wall', name: 'wall', width: 5, height: 5, spawnPoints: {}, tiles: allWallTiles };
     const fowW = new FogOfWar(3);
     const entityW = spawnEntity('trapped', hex(5, 5));
-    const fovW = fowW.calculateFOV(entityW, allWallMap, 3);
-    // 相邻 hex (dist ≤ 1) 始终可见，故自身 + 6 邻居 = 7
-    assertEqual(fovW.size, 7, '全墙地图: 仅自身+6邻里=7 hex 可见');
+    const fovW = calculateFOV(fowW, entityW, allWallMap, 3);
+    // 全墙地图: 邻居 hex 全是 WALL，阻挡 hex 自身不可见 → 仅自身 hex 可见
+    assertEqual(fovW.size, 1, '全墙地图仅自身 hex 可见');
 
     // 初始化 + reset
-    fowW.initializeMap(allWallMap);
+    fowW.initializeMap(allWallMap, 0);
     assertEqual(fowW.getHexFogState(hex(5, 5)), 'UNEXPLORED', '初始化后 UNEXPLORED');
     fowW.reset();
     assertEqual(fowW.getHexFogState(hex(5, 5)), 'UNEXPLORED', 'reset 后 UNEXPLORED');
@@ -705,12 +448,12 @@ function runTests() {
         tiles.push({ hex: { q, r }, terrain });
       }
     }
-    const lMap: MapData = { id: 'l_wall', tiles };
+    const lMap: MapData = { id: 'l_wall', name: 'wall', width: 8, height: 8, spawnPoints: {}, tiles };
     const fow = new FogOfWar(5);
 
     // 站在 (4,4) — L 墙内侧
     const entity = spawnEntity('watcher', hex(4, 4));
-    const fov = fow.calculateFOV(entity, lMap, 5);
+    const fov = calculateFOV(fow, entity, lMap, 5);
 
     // 内侧可见
     assert(findHexInSet(fov, 3, 4), '内侧 (3,4) 可见');
@@ -726,11 +469,11 @@ function runTests() {
         blocking.add(hexKey(tile.hex));
       }
     }
-    const los = fow.hasLineOfSight(hex(4, 4), hex(6, 7), blocking, lMap);
+    const los = fow.hasLineOfSight(hex(4, 4), hex(6, 7), blocking);
     assert(!los, 'L 墙阻挡 (4,4)→(6,7) [经 WALL(5,5)]');
 
     // 从 (4,6) 到 (4,7): 距离 1，始终可见（即使 (4,7) 是 WALL）
-    const losAdj = fow.hasLineOfSight(hex(4, 6), hex(4, 7), blocking, lMap);
+    const losAdj = fow.hasLineOfSight(hex(4, 6), hex(4, 7), blocking);
     assert(losAdj, '相邻 hex(4,7) 始终可见 dist=1');
   }
 

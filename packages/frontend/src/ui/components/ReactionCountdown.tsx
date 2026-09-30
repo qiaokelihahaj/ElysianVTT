@@ -9,7 +9,6 @@ export const ReactionCountdown: React.FC = () => {
     const playerRole = useGameStore(state => state.permission.role);
     const sendDecisionResponse = useGameStore(state => state.sendDecisionResponse);
     const [remaining, setRemaining] = useState(0);
-    const frozenRef = useRef<number | null>(null);
     const rafRef = useRef<number | null>(null);
     // 防御层 3: 本地 ref 追踪用户是否已按空格，防止浏览器事件竞态
     const hasEngagedRef = useRef(false);
@@ -42,55 +41,29 @@ export const ReactionCountdown: React.FC = () => {
     // Effect 1: 自动跳过定时器
     // 倒计时结束且未按空格 → 自动跳过
     // 按空格后 cleanup 取消定时器 → 不会跳过
-    // 防御措施：setTimeout 回调中从 store 直接读取 reactionTriggered，
-    // 防止因 effect 生命周期竞态导致已按空格仍执行跳过
+    // 防御：setTimeout 回调中从 store + ref 双重确认，防止清理失败或浏览器竞态
     useEffect(() => {
-        const EFFECT_ID = Math.random().toString(36).slice(2, 6);
-        console.log(`[E1:${EFFECT_ID}] MOUNT activeWindow=${!!activeWindow}, ` +
-            `countdownEnd=${countdownEnd}, reactionTriggered=${reactionTriggered}`);
-
-        if (!activeWindow || countdownEnd === null) {
-            console.log(`[E1:${EFFECT_ID}] SKIP: no window or countdownEnd`);
-            return;
-        }
-        if (reactionTriggered) {
-            console.log(`[E1:${EFFECT_ID}] SKIP: reactionTriggered=true`);
-            return;
-        }
+        if (!activeWindow || countdownEnd === null) return;
+        if (reactionTriggered) return;
 
         const remainingMs = countdownEnd - Date.now();
-        console.log(`[E1:${EFFECT_ID}] remainingMs=${remainingMs}`);
 
         if (remainingMs <= 0) {
-            // 防御层: store + 本地 ref 双重确认
             const liveTriggered = useGameStore.getState().tactical.reactionTriggered;
-            const refEngaged = hasEngagedRef.current;
-            console.log(`[E1:${EFFECT_ID}] EXPIRED, liveTriggered=${liveTriggered}, refEngaged=${refEngaged}`);
-            if (!liveTriggered && !refEngaged) {
-                console.log(`[E1:${EFFECT_ID}] → sendDecisionResponse(null)`);
+            if (!liveTriggered && !hasEngagedRef.current) {
                 sendDecisionResponse(null);
             }
-            return () => {};
+            return;
         }
 
         const timer = setTimeout(() => {
             const liveTriggered = useGameStore.getState().tactical.reactionTriggered;
-            const refEngaged = hasEngagedRef.current;
-            console.log(`[E1:${EFFECT_ID}] TIMEOUT FIRED, liveTriggered=${liveTriggered}, refEngaged=${refEngaged}`);
-            if (!liveTriggered && !refEngaged) {
-                console.log(`[E1:${EFFECT_ID}] → sendDecisionResponse(null)`);
+            if (!liveTriggered && !hasEngagedRef.current) {
                 sendDecisionResponse(null);
-            } else {
-                console.log(`[E1:${EFFECT_ID}] GUARD: skip prevented (reactionTriggered=${liveTriggered}, refEngaged=${refEngaged})`);
             }
         }, remainingMs);
 
-        console.log(`[E1:${EFFECT_ID}] timer scheduled, remainingMs=${remainingMs}`);
-
-        return () => {
-            console.log(`[E1:${EFFECT_ID}] CLEANUP: clearing timer`);
-            clearTimeout(timer);
-        };
+        return () => { clearTimeout(timer); };
     }, [activeWindow, countdownEnd, reactionTriggered, sendDecisionResponse]);
 
     // Effect 2: RAF 视觉倒计时（纯显示，不含决策逻辑）
@@ -99,6 +72,8 @@ export const ReactionCountdown: React.FC = () => {
         if (reactionTriggered) return;
 
         const update = () => {
+            // 防止接战状态变更与已排队的 RAF 竞态，保持接战瞬间的显示值。
+            if (useGameStore.getState().tactical.reactionTriggered) return;
             const now = Date.now();
             const rem = (countdownEnd - now) / 1000;
             setRemaining(Math.max(0, rem));
@@ -118,13 +93,8 @@ export const ReactionCountdown: React.FC = () => {
     // 只有决策目标才显示组件（所有 hooks 之后才允许条件返回）
     if (!activeWindow || countdownEnd === null || !isDecisionTarget) return null;
 
-    // 玩家按空格打开面板后：冻结倒计时
-    if (reactionTriggered && frozenRef.current === null) {
-        frozenRef.current = remaining;
-    } else if (!reactionTriggered) {
-        frozenRef.current = null;
-    }
-    const displayRemaining = frozenRef.current ?? remaining;
+    // 玩家按空格打开面板后，RAF 已停止且 remaining 保持接战瞬间的值。
+    const displayRemaining = remaining;
 
     const totalSec = activeWindow.countdownMs / 1000;
     const percent = Math.max(0, (displayRemaining / totalSec) * 100);

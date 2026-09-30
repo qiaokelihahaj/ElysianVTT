@@ -142,14 +142,17 @@ interface RulePack {
 | 表达式求值 | RuleEvaluator mathjs 沙箱 | 已完成 ✓ |
 | 效果系统 | EffectSystem DAMAGE/HEAL/BUFF | 已完成 ✓ |
 | 空间系统 | SpatialSystem 路径规划 | 骨架完成 |
-| 五阶段状态机 | Idle→Delay→Startup→Active→Recovery | **待扩展** |
-| 双轨资源系统 | HP / PP(韧性) / FP(专注) | **待实现** |
-| 五道防线 | DR / DEF / Dodge / MicroEvasion / Saves | **待实现** |
-| 差合系统 | 挥空判定 + 后摇延长 + 确反 | **待实现** |
-| 假动作 | Cancel/Feint 主动取消 | **待实现** |
+| 五阶段状态机 | Delay→Startup→Active→Recovery（+ Channeling 多脉冲） | 已完成 ✓ |
+| 双轨资源系统 | HP / PP(韧性) / FP(专注) | 已完成 ✓ |
+| 五道防线 | DR / DEF(招架) / Dodge(闪避) / MicroEvasion(微避) / Saves(豁免) | 部分完成（Saves 待实现） |
+| 差合系统 | 挥空判定 + 后摇延长 + 确反 | 已完成 ✓ |
+| 假动作 | Cancel/Feint 主动取消 | 已完成 ✓ |
 | 部位破坏 | Damage Cap + 要害/损伤优先 | **待实现** |
-| 实体弹道 | 直射/抛物线 + 碰撞 + 掩体 | **待实现** |
-| 反应插队 | 第三方反应动作窗口 | **待实现** |
+| 实体弹道 | 直射/抛物线 + 碰撞 + 掩体 | 已完成 ✓ |
+| 掩体系统 | 半掩体/全掩体 CoverDR + 碰撞阈值 + 战术姿态(ADS/Blind-fire) | 已完成 ✓ |
+| 空间战术 | 触及/死角 + 冲刺加速 + 朝向转身 + 背刺判定 | 已完成 ✓ |
+| 阵型协作 | 物理拦截 + Active Interception + 封锁区域 | 已完成 ✓ |
+| 反应插队 | 第三方反应动作窗口 | 已完成 ✓ |
 
 ---
 
@@ -388,7 +391,7 @@ interface CharacterSheet {
 | CLIENT_INTENT | C→S | Socket.io | 已实现 ✓ |
 | STATE_MUTATED | S→C | Socket.io | 已实现 ✓ |
 | VISUAL_FX | S→C | Socket.io | 已实现 ✓ |
-| REACTION_AVAILABLE | S→C | Socket.io | **待实现** |
+| REACTION_AVAILABLE | S→C | Socket.io | 已实现 ✓ |
 | NARRATIVE_PUSH | S→C | Socket.io | **待实现** |
 | RECONNECT | C→S | Socket.io | **待实现** |
 | BACKFILL_STATE | C→S | Socket.io | **待实现** |

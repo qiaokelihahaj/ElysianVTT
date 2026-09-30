@@ -1,24 +1,31 @@
 {
   "name": "test",
+  "private": true,
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "test:unit": "tsx clashpool.test.ts && tsx interrupt.test.ts && tsx two-characters.test.ts",
-    "test:integration": "tsx engine.integration.test.ts",
-    "test:security": "tsx security-suite.runner.ts"
+    "test": "pnpm run test:smoke",
+    "test:smoke": "tsx auth-isolated.runner.ts backend-utils.test.ts fow.test.ts frontend-intent.test.ts frontend-store.test.ts",
+    "test:unit": "tsx auth-isolated.runner.ts clashpool.test.ts interrupt.test.ts two-characters.test.ts",
+    "test:integration": "tsx auth-isolated.runner.ts engine.integration.test.ts",
+    "test:security": "tsx auth-isolated.runner.ts auth.test.ts permission.test.ts visibility-and-logs.test.ts security-regression.test.ts",
+    "test:lan:browser": "tsx lan-browser.test.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "devDependencies": {
     "@types/node": "^25.6.0",
+    "fflate": "0.8.2",
+    "playwright": "1.52.0",
+    "socket.io": "4.8.3",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3"
   },
   "dependencies": {
     "esbuild": "^0.28.0",
-    "mathjs": "^15.2.0"
+    "mathjs": "^15.2.0",
+    "socket.io-client": "^4.8.3"
   }
 }

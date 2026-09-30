@@ -1,6 +1,6 @@
 // packages/backend/src/core/systems/FogOfWar.ts
 import type {
-  Entity, EntityId, HexCoord, Vector3D,
+  Entity, EntityId, ExploreEntity, HexCoord, Vector3D,
   FogState, FogCellState, FogOfWarState, FogUpdatePayload,
   TerrainVisibility, MapData, TileDef,
 } from '@hard-vtt/shared';
@@ -52,24 +52,35 @@ export class FogOfWar {
    * @returns           当前可见的 hex 坐标集合
    */
   calculateFOV(
-    entity: Entity,
+    originHex: HexCoord,
     mapData: MapData | null,
     allEntities: Entity[],
     sightRange?: number,
   ): Set<HexCoord> {
-    const originHex = VectorMath.vector3DToHex(entity.transform.coords);
     const range = sightRange ?? this.defaultSightRange;
     const visible = new Set<HexCoord>();
-    visible.add(originHex); // 自身所在 hex 始终可见
+    // 自身 hex 始终可见（你总能看到自己站立的位置）
+    visible.add(originHex);
 
     // 构建阻挡 hex 集合（WALL / OBSTACLE 地形）
     const blockingHexes = this.buildBlockingSet(mapData);
+
+    // 构建地图边界集合（仅含 mapData 中定义的 hex）
+    const mapBoundary = this.buildMapBoundary(mapData);
 
     // 六边形环扩展 + 视线检查
     for (let r = 1; r <= range; r++) {
       const ring = this.getHexRing(originHex, r);
       for (const hex of ring) {
-        if (this.hasLineOfSight(originHex, hex, blockingHexes, mapData)) {
+        // 地图边界限制：仅处理 mapData 中存在的 hex
+        if (mapBoundary !== null && !mapBoundary.has(this.hexKey(hex))) {
+          continue;
+        }
+        // 阻挡 hex 自身不可见（墙壁/障碍物不应加入可见集）
+        if (blockingHexes.has(this.hexKey(hex))) {
+          continue;
+        }
+        if (this.hasLineOfSight(originHex, hex, blockingHexes)) {
           visible.add(hex);
         }
       }
@@ -89,7 +100,6 @@ export class FogOfWar {
     origin: HexCoord,
     target: HexCoord,
     blockingHexes: Set<string>,
-    mapData: MapData | null,
   ): boolean {
     const dist = SpatialSystem.hexDistance(origin, target);
     if (dist <= 1) return true;
@@ -109,11 +119,7 @@ export class FogOfWar {
       const hex = this.cubeRoundToAxial(cubeInterp);
 
       if (blockingHexes.has(this.hexKey(hex))) {
-        // 检查该 tile 的高度是否完全阻挡视线
-        const tile = this.getTile(hex, mapData);
-        if (tile && this.isVisionBlocking(tile)) {
-          return false;
-        }
+        return false;
       }
     }
 
@@ -213,9 +219,7 @@ export class FogOfWar {
         };
         this.state.cells[key] = fogCell;
 
-        if (!existing) {
-          exploredHexes.push(h);
-        }
+        exploredHexes.push(h);
       } else {
         // 更新为 VISIBLE
         this.state.cells[key] = {
@@ -226,11 +230,18 @@ export class FogOfWar {
       }
     }
 
-    // 将遮蔽的 hex 标记为 EXPLORED
+    // Cache this observer before computing the union of all observers.
+    this.entityFov.set(entity.id, this.serializeHexSet(newFov));
+    const globallyVisible = new Set<string>();
+    for (const visible of this.entityFov.values()) {
+      for (const key of visible) globallyVisible.add(key);
+    }
+
+    // A hex remains globally VISIBLE while any other observer can see it.
     for (const h of obscuredHexes) {
       const key = this.hexKey(h);
       const existing = this.state.cells[key];
-      if (existing && existing.state === 'VISIBLE') {
+      if (existing && existing.state === 'VISIBLE' && !globallyVisible.has(key)) {
         this.state.cells[key] = {
           ...existing,
           state: 'EXPLORED',
@@ -239,7 +250,7 @@ export class FogOfWar {
     }
 
     // 更新可见 hex 列表
-    this.state.visibleHexes = Array.from(newFov);
+    this.state.visibleHexes = this.deserializeHexSet(globallyVisible);
 
     const payload: FogUpdatePayload = {
       entityId: entity.id,
@@ -264,19 +275,44 @@ export class FogOfWar {
     entities: Entity[],
     mapData: MapData | null,
     currentTick: number,
+    coordToHex: (coords: import('@hard-vtt/shared').Vector3D) => HexCoord,
   ): FogUpdatePayload[] {
     const updates: FogUpdatePayload[] = [];
     // 收集所有实体用于相互可见性判定
     const allEntities = Array.from(entities);
+    const observers = entities.filter(entity =>
+      (entity as Partial<ExploreEntity>).revealsFog ?? entity.type === 'ACTOR');
+    const observerIds = new Set(observers.map(entity => entity.id));
+    for (const entityId of this.entityFov.keys()) {
+      if (!observerIds.has(entityId)) this.removeEntity(entityId);
+    }
 
-    for (const entity of entities) {
-      const sightRange = (entity as any).sightRange ?? this.defaultSightRange;
-      const fov = this.calculateFOV(entity, mapData, allEntities, sightRange);
+    for (const entity of observers) {
+      const originHex = coordToHex(entity.transform.coords);
+      const sightRange = (entity as Partial<ExploreEntity>).sightRange ?? this.defaultSightRange;
+      const fov = this.calculateFOV(originHex, mapData, allEntities, sightRange);
       const update = this.updateFog(entity, fov, currentTick);
       updates.push(update);
     }
 
     return updates;
+  }
+
+  /** Release a departed observer while retaining previously explored terrain. */
+  removeEntity(entityId: EntityId): FogUpdatePayload {
+    const obscuredHexes = this.getEntityVisibleHexes(entityId);
+    this.entityFov.delete(entityId);
+    const globallyVisible = new Set<string>();
+    for (const visible of this.entityFov.values()) {
+      for (const key of visible) globallyVisible.add(key);
+    }
+    for (const hex of obscuredHexes) {
+      const key = this.hexKey(hex);
+      const cell = this.state.cells[key];
+      if (cell && !globallyVisible.has(key)) this.state.cells[key] = { ...cell, state: 'EXPLORED' };
+    }
+    this.state.visibleHexes = this.deserializeHexSet(globallyVisible);
+    return { entityId, revealedHexes: [], exploredHexes: [], obscuredHexes };
   }
 
   /**
@@ -328,6 +364,30 @@ export class FogOfWar {
     return { ...this.state.cells };
   }
 
+  /**
+   * 获取每个实体的 FOW 状态（供前端按角色渲染迷雾）
+   * 返回：entityId → 该实体可见的 hex key 集合
+   */
+  getPerEntityFowState(): Record<string, string[]> {
+    const result: Record<string, string[]> = {};
+    for (const [entityId, hexKeys] of this.entityFov) {
+      result[entityId] = Array.from(hexKeys);
+    }
+    return result;
+  }
+
+  /**
+   * 获取全局迷雾状态（所有被任何实体探索过的 hex）
+   * 返回：hexKey → FogState
+   */
+  getGlobalFowState(): Record<string, FogState> {
+    const result: Record<string, FogState> = {};
+    for (const [key, cell] of Object.entries(this.state.cells)) {
+      result[key] = cell.state;
+    }
+    return result;
+  }
+
   // ============================================================
   //  实体可见性过滤
   // ============================================================
@@ -348,6 +408,7 @@ export class FogOfWar {
     viewerId: EntityId,
     entities: Entity[],
     mapData: MapData | null,
+    coordToHex: (coords: Vector3D) => HexCoord = VectorMath.vector3DToHex.bind(VectorMath),
   ): Entity[] {
     return entities.filter(target => {
       // 自己始终可见
@@ -359,7 +420,7 @@ export class FogOfWar {
       }
 
       // 检查目标所在 hex 是否对观察者可见
-      const targetHex = VectorMath.vector3DToHex(target.transform.coords);
+      const targetHex = coordToHex(target.transform.coords);
       return this.isHexVisibleTo(viewerId, targetHex);
     });
   }
@@ -367,12 +428,16 @@ export class FogOfWar {
   /**
    * 检查实体 A 是否能看到实体 B
    */
-  canSeeEntity(viewerId: EntityId, target: Entity): boolean {
+  canSeeEntity(
+    viewerId: EntityId,
+    target: Entity,
+    coordToHex: (coords: Vector3D) => HexCoord = VectorMath.vector3DToHex.bind(VectorMath),
+  ): boolean {
     if (viewerId === target.id) return true;
     if (target.tags?.includes('INVISIBLE') || target.tags?.includes('HIDDEN')) {
       return false;
     }
-    const targetHex = VectorMath.vector3DToHex(target.transform.coords);
+    const targetHex = coordToHex(target.transform.coords);
     return this.isHexVisibleTo(viewerId, targetHex);
   }
 
@@ -414,20 +479,15 @@ export class FogOfWar {
    * 序列化当前迷雾状态（用于持久化或网络传输）
    */
   serialize(): FogOfWarState {
-    return {
-      cells: { ...this.state.cells },
-      visibleHexes: [...this.state.visibleHexes],
-    };
+    return structuredClone(this.state);
   }
 
   /**
    * 从序列化数据恢复迷雾状态
    */
   deserialize(saved: FogOfWarState): void {
-    this.state = {
-      cells: { ...saved.cells },
-      visibleHexes: [...saved.visibleHexes],
-    };
+    this.entityFov.clear();
+    this.state = structuredClone(saved);
   }
 
   // ============================================================
@@ -447,6 +507,19 @@ export class FogOfWar {
       }
     }
     return blocking;
+  }
+
+  /**
+   * 构建地图边界集合（所有 mapData 中定义的 hex key）
+   * 返回 null 表示无边界限制（null mapData）
+   */
+  private buildMapBoundary(mapData: MapData | null): Set<string> | null {
+    if (!mapData) return null;
+    const boundary = new Set<string>();
+    for (const tile of mapData.tiles) {
+      boundary.add(this.hexKey(tile.hex));
+    }
+    return boundary;
   }
 
   /**

@@ -71,6 +71,9 @@ export class RuleEvaluator {
         try {
             const result = math.evaluate!(parsedExpression, scope);
             const finalTotal = Number(result);
+            if (!Number.isFinite(finalTotal)) {
+                throw new Error('Rule expression must produce a finite number');
+            }
 
             const rolls: DicePoolResult = {
                 total: finalTotal,

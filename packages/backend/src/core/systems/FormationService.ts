@@ -2,7 +2,7 @@
 // 阵型与团队协作 — 物理拦截 + Active Interception + 封锁区域 (Phase 3.5)
 
 import type { Entity, EntityId, Vector3D, InterceptionResult } from '@hard-vtt/shared';
-import { LogVisibility } from '@hard-vtt/shared';
+import { LogVisibility, getEntityFaction } from '@hard-vtt/shared';
 import { VectorMath } from '../../utils/VectorMath.js';
 import { SpatialSystem } from './SpatialSystem.js';
 import { Logger } from '../../utils/Logger.js';
@@ -19,10 +19,11 @@ export class FormationService {
     attacker: Entity,
     protectee: Entity,
     attackValue: number,
-    baseDamage: number
+    baseDamage: number,
+    coopBonus = 0,
   ): InterceptionResult {
     const config = guardian.formationContext?.interceptConfig;
-    const interceptValue = config?.interceptionRating ?? 10;
+    const interceptValue = (config?.interceptionRating ?? 10) + coopBonus;
     const success = interceptValue >= attackValue;
     const reduction = config?.interceptDamageReduction ?? 0.4;
     const reducedDamage = success ? Math.floor(baseDamage * (1 - reduction)) : baseDamage;
@@ -92,7 +93,8 @@ export class FormationService {
     const blockers: Entity[] = [];
     for (const [, e] of allEntities) {
       if (e.id === mover.id) continue;
-      if (e.type !== 'ACTOR') continue;
+      if (e.type !== 'ACTOR' && e.type !== 'PROP') continue;
+      if ((e.resources.current.hp ?? 1) <= 0 || e.transform.planeId !== mover.transform.planeId) continue;
       if (!e.bodyBlocking && !e.formationContext?.interceptConfig) continue;
       blockers.push(e);
     }
@@ -138,6 +140,10 @@ export class FormationService {
     for (const [, e] of allEntities) {
       if (e.id === attacker.id || e.id === primaryTarget.id) continue;
       if (e.type !== 'ACTOR') continue;
+      if ((e.resources.current.hp ?? 1) <= 0 || e.transform.planeId !== primaryTarget.transform.planeId) continue;
+      const guardianFaction = getEntityFaction(e) ?? e.tags?.find(tag => tag.startsWith('FACTION_'));
+      const protecteeFaction = getEntityFaction(primaryTarget) ?? primaryTarget.tags?.find(tag => tag.startsWith('FACTION_'));
+      if (!guardianFaction || guardianFaction !== protecteeFaction) continue;
       entityList.push(e);
     }
 
@@ -156,12 +162,12 @@ export class FormationService {
       return { intercepted: false, result: null, adjustedDamage: baseDamage };
     }
 
-    const coopBonus = SpatialSystem.calculateCoopBonus(guardian.id ? interceptors : [guardian]);
+    const coopBonus = FormationService.calculateCoopBonus(interceptors);
     const effectiveInterceptValue = (guardian.formationContext?.interceptConfig?.interceptionRating ?? 10) + coopBonus;
 
     const result = FormationService.resolveInterception(
       guardian, attacker, primaryTarget,
-      attackValue + coopBonus, baseDamage
+      attackValue, baseDamage, coopBonus,
     );
 
     logger.game(

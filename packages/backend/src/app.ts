@@ -22,6 +22,11 @@ export function createApp(): express.Express {
     app.use('/health', healthRouter);
 
     app.post('/auth/login', (req: express.Request, res: express.Response) => {
+        // This identity-selecting endpoint is only a local development fixture.
+        if (process.env.ELYSIAN_ENABLE_DEV_LOGIN !== '1' || process.env.NODE_ENV === 'production') {
+            res.status(403).json({ ok: false, code: 'DEV_LOGIN_DISABLED' });
+            return;
+        }
         try {
             const { userId, role } = req.body;
 

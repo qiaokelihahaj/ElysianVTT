@@ -5,7 +5,10 @@ services:
       context: .
       dockerfile: packages/backend/Dockerfile.dev
     ports:
-      - "3000:3000"
+      # Only the local frontend is published; generic API stays on loopback.
+      - "127.0.0.1:5173:5173"
+    environment:
+      ELYSIAN_ENABLE_DEV_LOGIN: "${ELYSIAN_ENABLE_DEV_LOGIN:-0}"
     volumes:
       - .:/app
       - /app/node_modules
@@ -15,11 +18,11 @@ services:
     build: 
       context: .
       dockerfile: packages/frontend/Dockerfile.dev
-    ports:
-      - "5173:5173"
+    # Share loopback so Vite can proxy to the local-only development API.
+    network_mode: "service:backend"
     volumes:
       - .:/app
       - /app/node_modules
-    command: sh -c "pnpm install && pnpm --filter @hard-vtt/frontend dev"
+    command: sh -c "pnpm install && pnpm --filter @hard-vtt/frontend dev --host 0.0.0.0"
     depends_on:
       - backend

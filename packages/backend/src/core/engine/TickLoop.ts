@@ -5,7 +5,6 @@ import { PriorityQueue } from './PriorityQueue.js';
 export class TickLoop {
     public currentTick: Tick = 0;
     private queue: PriorityQueue;
-    private running = false;
 
     constructor(queue: PriorityQueue) {
         this.queue = queue;
@@ -17,6 +16,11 @@ export class TickLoop {
 
     public isEmpty(): boolean {
         return this.queue.size === 0;
+    }
+
+    public reset(): void {
+        this.currentTick = 0;
+        this.queue.clear();
     }
 
     /**
@@ -45,7 +49,7 @@ export class TickLoop {
 
         // 收集同一 Tick 的所有事件（ClashPool 批次）
         const batch: TickEvent[] = [];
-        while (this.queue.size > 0 && this.queue.peek()!.targetTick === this.currentTick) {
+        while (this.queue.size > 0 && this.queue.peek()!.targetTick <= this.currentTick) {
             const event = this.queue.pop()!;
             batch.push(event);
         }
@@ -70,7 +74,7 @@ export class TickLoop {
      * 供 ClashPool 预处理使用
      */
     public peekSameTickEvents(): TickEvent[] {
-        const heap = (this.queue as any).heap as TickEvent[];
+        const heap = this.queue.getAllEvents();
         if (heap.length === 0) return [];
 
         const firstTick = heap[0].targetTick;
@@ -88,7 +92,7 @@ export class TickLoop {
      */
     public static filterClashable(events: TickEvent[]): ActionExecutionEvent[] {
         return events.filter(
-            e => (e as any).eventType === 'ACTION_PHASE' && (e as ActionExecutionEvent).phase === 'STARTUP'
+            e => (e as Partial<ActionExecutionEvent>).eventType === 'ACTION_PHASE' && (e as ActionExecutionEvent).phase === 'STARTUP'
         ) as ActionExecutionEvent[];
     }
 }

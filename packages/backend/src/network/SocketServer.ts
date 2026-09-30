@@ -9,6 +9,10 @@ import { Logger } from '../utils/Logger.js';
 import { PermissionService, type PermissionSubject, type PermissionSnapshot } from '../permissions/PermissionService.js';
 import { AuthenticationService, type AuthToken } from '../auth/AuthenticationService.js';
 import { PermissionSnapshotRepository } from '../db/PermissionSnapshotRepository.js';
+import { VisibilityFilter } from './VisibilityFilter.js';
+import { CombatEngine } from '../campaigns/engines/CombatEngine.js';
+import { ExploreEngine } from '../campaigns/engines/ExploreEngine.js';
+import type { IEngineInstance } from '@hard-vtt/shared';
 
 const logger = Logger.create('Network:Socket');
 
@@ -21,6 +25,8 @@ interface SocketSessionState {
     sessionId?: string;
     authToken?: AuthToken;
     permissionSnapshot?: PermissionSnapshot;
+    authenticationSubject?: PermissionSubject;
+    accessToken?: string;
     authenticated: boolean;
 }
 
@@ -53,7 +59,8 @@ export class SocketServer {
      */
     private async refreshPlayerControlledEntities(sceneId: string): Promise<void> {
         try {
-            const engine = await this.campaignManager.getOrCreateEngine(sceneId);
+            const engine = await this.campaignManager.getEngine(sceneId);
+            if (!(engine instanceof CombatEngine)) return;
             const sockets = await this.io.in(sceneId).fetchSockets();
             const allControlled = new Set<string>();
 
@@ -80,6 +87,10 @@ export class SocketServer {
 
             socket.on('AUTHENTICATE', async (data: { token: string }, callback?: (response: any) => void) => {
                 try {
+                    if (!data || typeof data.token !== 'string') {
+                        socket.emit('AUTH_FAILED', { ok: false, code: 'AUTH_FAILED', message: '需要有效访问令牌' });
+                        return;
+                    }
                     const verification = AuthenticationService.verify(data.token);
                     if (!verification.valid || !verification.token) {
                         logger.warn(`Authentication failed for ${socket.id}: ${verification.error}`);
@@ -94,36 +105,43 @@ export class SocketServer {
                     }
 
                     const token = verification.token;
-                    socketState.authenticated = true;
-                    socketState.userId = token.userId;
-                    socketState.role = token.role;
-                    socketState.sessionId = token.sessionId;
-                    socketState.authToken = token;
-
                     const activeGrants = await PermissionGrantRepository.getActiveGrantsForUser(token.userId);
                     const delegatedEntities = activeGrants
-                        .filter(g => g.scopeType === 'entity' && g.scopeId)
+                        .filter(g => g.capability === 'control_entity' && g.scopeType === 'entity' && g.scopeId)
                         .map(g => g.scopeId!);
                     const extraCapabilities = activeGrants.map(g => g.capability as any);
                     
-                    const baseControlledEntities = token.role === 'GM' ? [] : [token.userId];
+                    const baseControlledEntities = token.role === 'PL' ? [token.userId] : [];
+                    const allowedSceneIds = Array.from(new Set(activeGrants.flatMap(grant => [
+                        ...(grant.sceneId ? [grant.sceneId] : []),
+                        ...(grant.capability === 'join_scene' && grant.scopeType === 'scene' && grant.scopeId ? [grant.scopeId] : []),
+                    ])));
 
-                    const initialSnapshot = PermissionService.buildSnapshot(
-                        PermissionService.createSubject({
+                    const authenticationSubject = PermissionService.createSubject({
                             sessionId: token.sessionId,
                             userId: token.userId,
                             role: token.role,
                             controlledEntityIds: [...baseControlledEntities, ...delegatedEntities],
                             visibleEntityIds: [...baseControlledEntities, ...delegatedEntities],
+                            allowedSceneIds,
+                            expiresAt: token.expiresAt,
                             permissionSnapshotVersion: 1
-                        })
-                    );
+                        });
+                    const initialSnapshot = PermissionService.buildSnapshot(authenticationSubject);
                     
                     if (extraCapabilities.length > 0) {
                         initialSnapshot.capabilities = Array.from(new Set([...initialSnapshot.capabilities, ...extraCapabilities])) as any;
                     }
 
                     await PermissionSnapshotRepository.createSnapshot(token.sessionId, initialSnapshot);
+                    this.leaveScene(socket);
+                    socketState.authenticated = true;
+                    socketState.userId = token.userId;
+                    socketState.role = token.role;
+                    socketState.sessionId = token.sessionId;
+                    socketState.authToken = token;
+                    socketState.accessToken = data.token;
+                    socketState.authenticationSubject = authenticationSubject;
                     socketState.permissionSnapshot = initialSnapshot;
 
                     const response = {
@@ -158,12 +176,24 @@ export class SocketServer {
             });
 
             socket.on('JOIN_SCENE', async (data: { sceneId: string, actorId?: string }) => {
+                if (!data || typeof data.sceneId !== 'string' || !data.sceneId
+                    || (data.actorId !== undefined && typeof data.actorId !== 'string')) {
+                    socket.emit('ERROR', { code: 'INVALID_PAYLOAD', message: '需要有效的场景和实体 ID' });
+                    return;
+                }
                 const { sceneId, actorId = 'guest' } = data;
                 const socketState = socket.data as SocketSessionState;
 
-                if (!socketState.authenticated || !socketState.userId || !socketState.sessionId) {
+                if (!this.requireAuthentication(socket) || !socketState.userId || !socketState.sessionId) {
                     logger.warn(`JOIN_SCENE rejected: Socket ${socket.id} not authenticated`);
                     socket.emit('ERROR', { code: 'UNAUTHENTICATED', message: '请先认证' });
+                    return;
+                }
+
+                const authenticatedSubject = socketState.authenticationSubject;
+                if (!authenticatedSubject || !PermissionService.canJoinScene(authenticatedSubject, sceneId)
+                    || (authenticatedSubject.role !== 'GM' && actorId !== 'guest' && !authenticatedSubject.controlledEntityIds.includes(actorId))) {
+                    socket.emit('ERROR', { code: 'UNAUTHORIZED', message: '没有进入该场景或控制该实体的权限' });
                     return;
                 }
 
@@ -180,16 +210,16 @@ export class SocketServer {
                 try {
                     logger.info(`User ${socketState.userId} requested to join scene: ${sceneId}`, null, { sceneId });
 
-                    const permissionSubject = this.permissionService.createSubject({
-                        sessionId: socketState.sessionId,
-                        userId: socketState.userId,
-                        role: socketState.role,
-                        controlledEntityIds: actorId === 'guest' ? [] : [actorId],
-                        visibleEntityIds: actorId === 'guest' ? [] : [actorId],
-                        allowedSceneIds: [sceneId]
-                    });
                     const engine = await this.campaignManager.getOrCreateEngine(sceneId);
                     const scene = this.campaignManager.getScene(sceneId);
+                    if (!socket.connected || !this.requireAuthentication(socket)) return;
+                    const permissionSubject = VisibilityFilter.forScene(this.permissionService.createSubject({
+                        ...authenticatedSubject,
+                        controlledEntityIds: actorId === 'guest' ? [] : [actorId],
+                        allowedSceneIds: [sceneId]
+                    }), engine.getAllEntities());
+
+                    this.leaveScene(socket);
 
                     socketState.permissionSubject = permissionSubject;
 
@@ -197,12 +227,12 @@ export class SocketServer {
                     const sceneSnapshot = this.permissionService.buildSnapshot(permissionSubject, sceneId);
                     socketState.permissionSnapshot = sceneSnapshot;
 
-                    socket.join(sceneId);
+                    await socket.join(sceneId);
 
                     socketState.currentSceneId = sceneId;
                     socketState.currentActorId = actorId ?? socketState.userId;
 
-                    scene?.onPlayerJoin(actorId);
+                    scene?.onPlayerJoin(socket.id);
 
                     // 更新引擎的玩家控制实体列表
                     this.refreshPlayerControlledEntities(sceneId);
@@ -214,14 +244,7 @@ export class SocketServer {
                         permissionSnapshot: this.permissionService.buildSnapshot(permissionSubject, sceneId)
                     });
 
-                    socket.emit('SCENE_SYNC', {
-                        tick: engine.currentTick,
-                        entities: engine.getAllEntities(),
-                        scheduledActions: engine.getScheduledActions?.() ?? [],
-                        hookPresets: engine.getActiveHookPresets?.() ?? [],
-                        activeDecisionPolls: engine.getActiveDecisionPolls?.() ?? [],
-                        pendingDecisionCount: engine.getPendingDecisionCount?.() ?? 0
-                    });
+                    this.emitSceneSync(socket, engine);
 
                 } catch (error) {
                     logger.error(`Failed to join scene:`, error, { sceneId });
@@ -230,13 +253,14 @@ export class SocketServer {
             });
 
             socket.on('CLIENT_INTENT', async (intent: ClientIntent) => {
+                if (!this.requireAuthentication(socket)) return;
                 await this.intentRouter.routeIntent(socket, intent);
             });
 
             socket.on('REFRESH_PERMISSION', async (callback?: (response: any) => void) => {
                 const socketState = socket.data as SocketSessionState;
 
-                if (!socketState.authenticated || !socketState.sessionId) {
+                if (!this.requireAuthentication(socket) || !socketState.sessionId) {
                     logger.warn(`REFRESH_PERMISSION: Socket ${socket.id} not authenticated`);
                     const response = {
                         ok: false,
@@ -287,92 +311,125 @@ export class SocketServer {
             });
 
             socket.on('PING', (data: { t: number }, callback?: (response: any) => void) => {
-                const response = { ok: true, t: data.t, serverTime: Date.now() };
+                const response = { ok: true, t: data?.t, serverTime: Date.now() };
                 if (callback) callback(response);
                 else socket.emit('PONG', response);
             });
 
             socket.on('RESYNC', async () => {
                 const sState = socket.data as SocketSessionState;
+                if (!this.requireAuthentication(socket)) return;
                 if (!sState.currentSceneId) return;
                 const engine = await this.campaignManager.getOrCreateEngine(sState.currentSceneId);
-                socket.emit('SCENE_SYNC', {
-                    tick: engine.currentTick,
-                    entities: engine.getAllEntities(),
-                    scheduledActions: engine.getScheduledActions?.() ?? [],
-                    hookPresets: engine.getActiveHookPresets?.() ?? [],
-                    activeDecisionPolls: engine.getActiveDecisionPolls?.() ?? [],
-                    pendingDecisionCount: engine.getPendingDecisionCount?.() ?? 0
-                });
+                this.emitSceneSync(socket, engine);
             });
 
             socket.on('DECISION_RESPONSE', async (payload: DecisionResponsePayload) => {
+                if (!this.requireAuthentication(socket) || !payload || typeof payload.windowId !== 'string'
+                    || (payload.chosenOptionId !== null && typeof payload.chosenOptionId !== 'string')) return;
                 const sState = socket.data as SocketSessionState;
                 if (!sState.currentSceneId) return;
                 const engine = await this.campaignManager.getOrCreateEngine(sState.currentSceneId);
-                if (typeof (engine as any).handleDecisionResponse === 'function') {
-                    (engine as any).handleDecisionResponse(payload, socket.id);
+                if (engine instanceof CombatEngine && this.canRespond(socket, engine, payload.windowId)) {
+                    engine.handleDecisionResponse(payload, socket.id);
                 }
             });
 
             socket.on('DECISION_ENGAGE', async (payload: { windowId: string }) => {
+                if (!this.requireAuthentication(socket) || !payload || typeof payload.windowId !== 'string') return;
                 const sState = socket.data as SocketSessionState;
                 if (!sState.currentSceneId) return;
                 const engine = await this.campaignManager.getOrCreateEngine(sState.currentSceneId);
-                if (typeof (engine as any).handleDecisionEngage === 'function') {
-                    (engine as any).handleDecisionEngage(payload.windowId, socket.id);
+                if (engine instanceof CombatEngine && this.canRespond(socket, engine, payload.windowId)) {
+                    engine.handleDecisionEngage(payload.windowId, socket.id);
                 }
             });
 
             socket.on('GM_FORCE_RESOLVE', async () => {
+                if (!this.requireAuthentication(socket)) return;
                 const sState = socket.data as SocketSessionState;
                 if (!sState.currentSceneId || sState.role !== 'GM') return;
                 const engine = await this.campaignManager.getOrCreateEngine(sState.currentSceneId);
-                if (typeof (engine as any).handleGmForceResolve === 'function') {
-                    (engine as any).handleGmForceResolve();
+                if (engine instanceof CombatEngine) {
+                    engine.handleGmForceResolve();
                 }
             });
 
             socket.on('LEAVE_SCENE', () => {
-                const socketState = socket.data as SocketSessionState;
-                const sceneId = socketState.currentSceneId;
-                const actorId = socketState.currentActorId ?? 'guest';
-
-                if (sceneId) {
-                    socket.leave(sceneId);
-                    const scene = this.campaignManager.getScene(sceneId);
-                    scene?.onPlayerLeave(actorId);
-
-                    this.refreshPlayerControlledEntities(sceneId);
-
-                    logger.info(`Player ${actorId} left scene ${sceneId}`, { sceneId });
-                }
-
-                socketState.currentSceneId = undefined;
-                socketState.currentActorId = undefined;
-                socketState.permissionSubject = undefined;
+                this.leaveScene(socket);
             });
 
             socket.on('disconnect', () => {
-                const socketState = socket.data as SocketSessionState;
-                const sceneId = socketState.currentSceneId;
-                const actorId = socketState.currentActorId ?? 'guest';
-
-                if (sceneId) {
-                    const scene = this.campaignManager.getScene(sceneId);
-                    scene?.onPlayerLeave(actorId);
-
-                    this.refreshPlayerControlledEntities(sceneId);
-
-                    logger.info(`Client disconnected: ${socket.id} from scene ${sceneId}`, { sceneId, socketId: socket.id });
-                } else {
-                    logger.info(`Client disconnected: ${socket.id}`);
-                }
-
-                socketState.currentSceneId = undefined;
-                socketState.currentActorId = undefined;
-                socketState.permissionSubject = undefined;
+                this.leaveScene(socket);
+                logger.info(`Client disconnected: ${socket.id}`);
             });
+        });
+    }
+
+    private leaveScene(socket: Socket): void {
+        const state = socket.data as SocketSessionState;
+        const sceneId = state.currentSceneId;
+        state.currentSceneId = undefined;
+        state.currentActorId = undefined;
+        state.permissionSubject = undefined;
+        if (!sceneId) return;
+        void socket.leave(sceneId);
+        const scene = this.campaignManager.getScene(sceneId);
+        scene?.activeCombatEngine?.releaseSocketDecisionWindows(socket.id);
+        scene?.onPlayerLeave(socket.id);
+        void this.refreshPlayerControlledEntities(sceneId);
+    }
+
+    private requireAuthentication(socket: Socket): boolean {
+        const state = socket.data as SocketSessionState;
+        if (state.authenticated && state.accessToken && AuthenticationService.verify(state.accessToken).valid) return true;
+        state.authenticated = false;
+        this.leaveScene(socket);
+        socket.emit('ERROR', { code: 'UNAUTHENTICATED', message: '会话已失效，请重新认证' });
+        return false;
+    }
+
+    private canRespond(socket: Socket, engine: CombatEngine, windowId: string): boolean {
+        const state = socket.data as SocketSessionState;
+        const poll = engine.getActiveDecisionPolls().find(candidate => candidate.windowId === windowId);
+        return !!poll && !!state.permissionSubject && (state.role === 'GM'
+            || state.permissionSubject.controlledEntityIds.includes(poll.actorId));
+    }
+
+    /** Initial join and reconnect use the same visibility boundary. */
+    private emitSceneSync(socket: Socket, engine: IEngineInstance): void {
+        const state = socket.data as SocketSessionState;
+        if (!state.permissionSubject || !this.requireAuthentication(socket)) return;
+        const viewer = VisibilityFilter.forScene(state.permissionSubject, engine.getAllEntities());
+        state.permissionSubject = viewer;
+        const entities = VisibilityFilter.getVisibleEntities(engine.getAllEntities(), viewer);
+        const activeDecisionPolls = (engine.getActiveDecisionPolls?.() ?? []).flatMap(poll => {
+            const filtered = VisibilityFilter.filterDecisionPoll(poll, viewer);
+            return filtered ? [filtered] : [];
+        });
+        const explore = engine instanceof ExploreEngine ? engine : undefined;
+        const perEntityFow = explore?.getPerEntityFowState();
+        const result = engine.getCombatResult?.() ?? null;
+        socket.emit('SCENE_SYNC', {
+            tick: engine.currentTick,
+            entities,
+            scheduledActions: (engine.getScheduledActions?.() ?? []).flatMap(action => {
+                const filtered = VisibilityFilter.filterAction(action, viewer);
+                return filtered ? [filtered] : [];
+            }),
+            hookPresets: (engine.getActiveHookPresets?.() ?? []).filter(hook => viewer.role === 'GM' || viewer.controlledEntityIds.includes(hook.entityId)),
+            activeDecisionPolls,
+            pendingDecisionCount: viewer.role === 'GM' ? engine.getPendingDecisionCount?.() ?? 0 : activeDecisionPolls.length,
+            combatResult: result && viewer.role !== 'GM' ? {
+                ...result,
+                survivors: result.survivors.filter(id => VisibilityFilter.isEntityVisibleTo(id, viewer)),
+                casualties: result.casualties.filter(id => VisibilityFilter.isEntityVisibleTo(id, viewer)),
+            } : result,
+            engineType: engine.engineType,
+            mapData: explore?.getMapData() ?? null,
+            fowCells: viewer.role === 'GM' ? explore?.getFowState() ?? null : null,
+            perEntityFow: perEntityFow ? Object.fromEntries(Object.entries(perEntityFow).filter(([id]) => viewer.role === 'GM' || viewer.controlledEntityIds.includes(id))) : null,
+            globalFowState: viewer.role === 'GM' ? explore?.getGlobalFowState() ?? null : null,
         });
     }
 }

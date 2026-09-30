@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
-import type { Entity, StateMutationPayload, Vector3D, ActionScheduledPayload, DecisionPollPayload, PlayerPriorityToggle, HookPreset } from '@hard-vtt/shared';
+import type { Entity, StateMutationPayload, Vector3D, ActionScheduledPayload, DecisionPollPayload, PlayerPriorityToggle, HookPreset, CombatEndPayload } from '@hard-vtt/shared';
 import { setNestedProperty } from '../utils/objectUtils';
 
 export type ViewerRole = 'GM' | 'PL' | 'OB';
@@ -34,6 +34,8 @@ interface TacticalState {
 }
 
 interface GameState {
+    combatResult: CombatEndPayload | null;
+    finishCombat: (result: CombatEndPayload) => void;
     tick: number;
     entities: Record<string, Entity>;
     selectedEntityId: string | null;
@@ -82,9 +84,9 @@ interface GameState {
     setPlayerToggle: (mode: PlayerPriorityToggle) => void;
     addHookPreset: (preset: HookPreset) => void;
     removeHookPreset: (id: string) => void;
-    upsertHookPreset: (hookData: any) => void;
+    upsertHookPreset: (hookData: HookPreset) => void;
     removeHookPresetLocal: (id: string) => void;
-    setSyncHookPresets: (presets: any[]) => void;
+    setSyncHookPresets: (presets: HookPreset[]) => void;
 }
 
 export const useGameStore = create<GameState>()(
@@ -121,16 +123,38 @@ export const useGameStore = create<GameState>()(
                 hookPresets: [],
             },
 
+        combatResult: null,
+        finishCombat: (result) => set((state) => {
+            state.combatResult = result;
+            state.tick = Math.max(state.tick, result.tick);
+            state.scheduledActions = [];
+            state.movementTargets = {};
+            state.uiState = { mode: 'IDLE', pendingMoveCoords: null, activeActionId: null };
+            state.tactical.activeWindow = null;
+            state.tactical.countdownEnd = null;
+            state.tactical.frozenTick = null;
+            state.tactical.reactionTriggered = false;
+            for (const entity of result.entities) {
+                if (state.entities[entity.id]) {
+                    state.entities[entity.id] = { ...entity, currentActionContext: undefined };
+                }
+            }
+        }),
         setInitialScene: (entities, tick, scheduledActions) => set((state) => {
+            state.combatResult = null;
             state.tick = tick;
             state.entities = {};
             state.selectedEntityId = null;
             entities.forEach((entity) => {
                 state.entities[entity.id] = entity;
             });
-            if (scheduledActions) {
-                state.scheduledActions = scheduledActions;
-            }
+            state.scheduledActions = scheduledActions ?? [];
+            state.movementTargets = {};
+            state.uiState = { mode: 'IDLE', pendingMoveCoords: null, activeActionId: null };
+            state.tactical.activeWindow = null;
+            state.tactical.frozenTick = null;
+            state.tactical.countdownEnd = null;
+            state.tactical.reactionTriggered = false;
         }),
 
         applyStateMutation: (payload: StateMutationPayload) => set((state) => {
@@ -169,8 +193,17 @@ export const useGameStore = create<GameState>()(
 
         removeEntity: (entityId) => set((state) => {
             delete state.entities[entityId];
+            delete state.movementTargets[entityId];
+            state.scheduledActions = state.scheduledActions.filter(action => action.entityId !== entityId);
             if (state.selectedEntityId === entityId) {
                 state.selectedEntityId = null;
+                state.uiState = { mode: 'IDLE', pendingMoveCoords: null, activeActionId: null };
+            }
+            if (state.tactical.activeWindow?.actorId === entityId) {
+                state.tactical.activeWindow = null;
+                state.tactical.frozenTick = null;
+                state.tactical.countdownEnd = null;
+                state.tactical.reactionTriggered = false;
             }
         }),
 
@@ -231,6 +264,10 @@ export const useGameStore = create<GameState>()(
 
             // Tactical Decision Actions
             setActiveWindow: (window) => set((state) => {
+                if (state.tactical.activeWindow?.windowId !== window.windowId) {
+                    state.tactical.countdownEnd = null;
+                    state.tactical.reactionTriggered = false;
+                }
                 state.tactical.activeWindow = window;
                 if (window && typeof window.tick === 'number') {
                     state.tactical.frozenTick = window.tick;
@@ -320,7 +357,6 @@ export const useGameStore = create<GameState>()(
 
             setSyncHookPresets: (presets) => set((state) => {
                 // Merge synced hooks: keep local-only, overwrite synced, add new
-                const localIds = new Set(state.tactical.hookPresets.map(p => p.id));
                 for (const p of presets) {
                     const idx = state.tactical.hookPresets.findIndex(x => x.id === p.id);
                     if (idx >= 0) {

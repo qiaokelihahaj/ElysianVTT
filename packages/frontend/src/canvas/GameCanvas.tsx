@@ -14,6 +14,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
 
     useEffect(() => {
         if (!canvasRef.current) return;
+        const canvas = canvasRef.current;
 
         let isMounted = true;
         const manager = RendererManager.getInstance();
@@ -21,13 +22,15 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         const initPixi = async () => {
             if (!isMounted) return;
             await manager.initialize({
-                canvas: canvasRef.current!,
+                canvas,
                 width,
                 height,
             });
         };
 
-        initPixi();
+        void initPixi().catch((error: unknown) => {
+            if (isMounted) console.error('[Renderer] 初始化失败:', error);
+        });
 
         return () => {
             isMounted = false;

@@ -74,6 +74,35 @@ function assertPackageJson(pkgPath, expectedName, requiredDeps = []) {
   }
 }
 
+function assertTailwindSetup() {
+  const packagePath = path.join(__dirname, 'packages/frontend/package.json');
+  const cssPath = path.join(__dirname, 'packages/frontend/src/index.css');
+  const vitePath = path.join(__dirname, 'packages/frontend/vite.config.ts');
+
+  try {
+    const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+    const hasTailwindVitePlugin = Boolean(
+      pkg.devDependencies?.['@tailwindcss/vite'] || pkg.dependencies?.['@tailwindcss/vite']
+    );
+    const css = fs.readFileSync(cssPath, 'utf8');
+    const viteConfig = fs.readFileSync(vitePath, 'utf8');
+    const isTailwindV4 = hasTailwindVitePlugin
+      && viteConfig.includes('@tailwindcss/vite')
+      && css.includes('@import "tailwindcss"');
+    const hasLegacyConfig = fs.existsSync(path.join(__dirname, 'packages/frontend/tailwind.config.js'));
+
+    if (isTailwindV4 || hasLegacyConfig) {
+      console.log(`${MARK.ok} Tailwind 配置验证通过（Tailwind v4 Vite 插件或旧版配置）`);
+    } else {
+      console.log(`${MARK.fail} Tailwind 配置不完整（未找到 v4 Vite/CSS 配置或旧版配置文件）`);
+      errorCount++;
+    }
+  } catch (e) {
+    console.log(`${MARK.fail} Tailwind 配置检查失败`);
+    errorCount++;
+  }
+}
+
 // ---------------- 执行验证 ----------------
 
 console.log(`${COLORS.cyan}开始执行 ElysianVTT 环境与脚手架审查...${COLORS.reset}`);
@@ -112,7 +141,7 @@ assertPackageJson('packages/frontend/package.json', '@hard-vtt/frontend', [
   'socket.io-client'
 ]);
 assertFile('packages/frontend/vite.config.ts', 'Vite 配置文件');
-assertFile('packages/frontend/tailwind.config.js', 'Tailwind 配置文件');
+assertTailwindSetup();
 assertFile('packages/frontend/Dockerfile.dev', 'Frontend 本地开发 Dockerfile');
 
 console.log('\n----------------------------------------');
@@ -121,3 +150,4 @@ if (errorCount === 0) {
 } else {
   console.log(`${COLORS.red}❌ 验证失败！发现 ${errorCount} 处环境或配置问题，请向上检查日志并修复。${COLORS.reset}`);
 }
+process.exitCode = errorCount === 0 ? 0 : 1;

@@ -3,9 +3,9 @@
 
 /**
  * 安全解析 JSON 字符串为任意对象。
- * 解析失败或结果类型不匹配时返回 fallback，并输出警告日志。
+ * 解析失败或未通过可选的结构校验时返回 fallback，并输出警告日志。
  */
-export function safeParse<T>(json: string, fallback: T, label?: string): T {
+export function safeParse<T>(json: string, fallback: T, label?: string, validate?: (value: unknown) => value is T): T {
     if (!json || json.trim().length === 0) {
         warn('输入为空', label);
         return fallback;
@@ -13,6 +13,10 @@ export function safeParse<T>(json: string, fallback: T, label?: string): T {
 
     try {
         const parsed: unknown = JSON.parse(json);
+        if (validate && !validate(parsed)) {
+            warn('解析结果结构不匹配', label);
+            return fallback;
+        }
         return parsed as T;
     } catch (error) {
         warn(`解析异常: ${(error as Error).message}`, label);

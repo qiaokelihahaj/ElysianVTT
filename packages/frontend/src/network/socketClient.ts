@@ -1,11 +1,48 @@
 import { io, Socket } from 'socket.io-client';
-import type { ClientIntent, StateMutationPayload, VisualEventPayload, ActionScheduledPayload, DecisionPollPayload, DecisionResponsePayload } from '@hard-vtt/shared';
+import type { CombatEndPayload } from '@hard-vtt/shared';
+import type {
+    ClientIntent,
+    FogUpdatePayload,
+    HookPreset,
+    StateMutationPayload,
+    VisualEventPayload,
+    ActionScheduledPayload,
+    DecisionPollPayload,
+    DecisionResponsePayload,
+} from '@hard-vtt/shared';
 
 const SOCKET_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3000';
 
+interface SocketResponse {
+    ok: boolean;
+    code?: string;
+    message?: string;
+    [key: string]: unknown;
+}
+
+interface JoinSuccessResponse {
+    sceneId: string;
+    serverTime: number;
+    message: string;
+    permissionSnapshot: unknown;
+}
+
+interface HookSyncPayload {
+    action: string;
+    hook: HookPreset;
+}
+
+function isSocketResponse(value: unknown): value is SocketResponse {
+    if (typeof value !== 'object' || value === null) return false;
+    const response = value as Record<string, unknown>;
+    return typeof response.ok === 'boolean'
+        && (response.code === undefined || typeof response.code === 'string')
+        && (response.message === undefined || typeof response.message === 'string');
+}
+
 class SocketClient {
     private socket: Socket;
-    private _authFailedCallbacks: Array<(response: any) => void> = [];
+    private _authFailedCallbacks: Array<(response: SocketResponse) => void> = [];
     /** 当为 true 时，跳过 App.tsx 的自动 joinScene（用于身份切换） */
     public skipAutoJoin = false;
 
@@ -52,12 +89,14 @@ class SocketClient {
     }
 
     public authenticate(token: string) {
-        this.socket.emit('AUTHENTICATE', { token }, (response: any) => {
+        this.socket.emit('AUTHENTICATE', { token }, (rawResponse: unknown) => {
+            const response = isSocketResponse(rawResponse)
+                ? rawResponse
+                : { ok: false, code: 'INVALID_RESPONSE', message: '认证响应无效' };
             if (response?.ok) {
                 console.log('[Socket] Authenticated successfully');
-                this.socket.emit('AUTH_SUCCESS', response);
             } else {
-                console.error('[Socket] Authentication failed:', response?.message);
+                console.error('[Socket] Authentication failed:', response.message);
                 this._authFailedCallbacks.forEach(cb => cb(response));
             }
         });
@@ -92,9 +131,9 @@ class SocketClient {
             const t0 = performance.now();
             const timer = setTimeout(() => resolve(-1), timeout);
 
-            this.socket.emit('PING', { t: t0 }, (response: any) => {
+            this.socket.emit('PING', { t: t0 }, (rawResponse: unknown) => {
                 clearTimeout(timer);
-                if (response?.ok) {
+                if (isSocketResponse(rawResponse) && rawResponse.ok) {
                     const latency = Math.round(performance.now() - t0);
                     resolve(latency);
                 } else {
@@ -104,24 +143,24 @@ class SocketClient {
         });
     }
 
-    public onAuthSuccess(callback: (response: any) => void) {
+    public onAuthSuccess(callback: (response: SocketResponse) => void) {
         this.socket.on('AUTH_SUCCESS', callback);
     }
-    public offAuthSuccess(callback: (response: any) => void) {
+    public offAuthSuccess(callback: (response: SocketResponse) => void) {
         this.socket.off('AUTH_SUCCESS', callback);
     }
 
-    public onAuthFailed(callback: (response: any) => void) {
+    public onAuthFailed(callback: (response: SocketResponse) => void) {
         this._authFailedCallbacks.push(callback);
     }
-    public offAuthFailed(callback: (response: any) => void) {
+    public offAuthFailed(callback: (response: SocketResponse) => void) {
         this._authFailedCallbacks = this._authFailedCallbacks.filter(cb => cb !== callback);
     }
 
-    public onJoinSuccess(callback: (response: any) => void) {
+    public onJoinSuccess(callback: (response: JoinSuccessResponse) => void) {
         this.socket.on('JOIN_SUCCESS', callback);
     }
-    public offJoinSuccess(callback: (response: any) => void) {
+    public offJoinSuccess(callback: (response: JoinSuccessResponse) => void) {
         this.socket.off('JOIN_SUCCESS', callback);
     }
 
@@ -144,6 +183,13 @@ class SocketClient {
     }
     public offSceneSync(callback: (payload: { tick: number, entities: import('@hard-vtt/shared').Entity[] }) => void) {
         this.socket.off('SCENE_SYNC', callback);
+    }
+
+    public onCombatEnd(callback: (payload: CombatEndPayload) => void) {
+        this.socket.on('COMBAT_END', callback);
+    }
+    public offCombatEnd(callback: (payload: CombatEndPayload) => void) {
+        this.socket.off('COMBAT_END', callback);
     }
 
     public onActionScheduled(callback: (payload: ActionScheduledPayload) => void) {
@@ -174,15 +220,22 @@ class SocketClient {
         this.socket.off('DECISION_ALL_RESOLVED', callback);
     }
 
-    public onHookSync(callback: (payload: { action: string, hook: { id: string, entityId: string, label: string, trigger: any, enabled: boolean } }) => void) {
+    public onHookSync(callback: (payload: HookSyncPayload) => void) {
         this.socket.on('HOOK_SYNC', callback);
     }
-    public offHookSync(callback: (payload: { action: string, hook: { id: string, entityId: string, label: string, trigger: any, enabled: boolean } }) => void) {
+    public offHookSync(callback: (payload: HookSyncPayload) => void) {
         this.socket.off('HOOK_SYNC', callback);
     }
 
     public sendDecisionResponse(payload: DecisionResponsePayload) {
         this.socket.emit('DECISION_RESPONSE', payload);
+    }
+
+    public onFogUpdated(callback: (payload: FogUpdatePayload) => void) {
+        this.socket.on('FOG_UPDATED', callback);
+    }
+    public offFogUpdated(callback: (payload: FogUpdatePayload) => void) {
+        this.socket.off('FOG_UPDATED', callback);
     }
 
     public sendDecisionEngage(windowId: string) {
