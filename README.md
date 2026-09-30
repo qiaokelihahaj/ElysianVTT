@@ -144,6 +144,8 @@ pnpm dev:backend
 pnpm dev:frontend
 ```
 
+Prisma 开发数据库 `packages/backend/prisma/dev.db` 是本地数据文件，不纳入版本控制。首次拉取仓库后，通过上面的 `db:generate`、`db:push` 和 `db:seed` 初始化。
+
 ### 运行测试
 
 ```bash

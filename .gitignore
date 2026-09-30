@@ -40,6 +40,11 @@ coverage/
 # TypeScript build info
 **/*.tsbuildinfo
 
+# Generated JavaScript next to TypeScript sources
+/packages/backend/src/**/*.js
+/packages/shared/src/**/*.js
+/test/*.js
+
 # Lockfile or debugging logs (keep lockfile tracked; ignore pnpm debug)
 pnpm-debug.log*
 
